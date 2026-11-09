@@ -18,7 +18,7 @@
 | 5 | Full-context baseline (constrained to MAX_CONTEXT_CHARS) | Does retrieval help at all vs just pasting the whole doc? |
 | 6 | All advanced combined | Combined effect of hybrid + parent-child + rerank + query expansion |
 
-Constants enforced across all levels: model, document, embedding, chunking, prompt, eval questions, context cap (3000 chars), thinking level ("low"), OpenRouter backend.
+Constants enforced across all levels: model, document, embedding, chunking, prompt, eval questions, context cap (MAX_CONTEXT_CHARS, ~5,464 chars with 10% buffer), thinking level ("low"), OpenRouter backend.
 
 ---
 
@@ -144,13 +144,13 @@ Constants enforced across all levels: model, document, embedding, chunking, prom
 
 **What it is:** Instead of raw chunks, summarize or extract only relevant sentences from retrieved chunks before stuffing into the prompt (e.g., LLMLingua, sentence selection, extractive summarization).
 
-**Why not covered:** Current `fit_context()` truncates to 3000 chars but does not semantically compress or summarize.
+**Why not covered:** Current `fit_context()` truncates to MAX_CONTEXT_CHARS (~5,464 chars) but does not semantically compress or summarize.
 
 **Complexity to add:** Low-medium. Needs a summarization/extraction model or prompt as an additional constant.
 
 **Fit with constants:** Moderate. The compression method/prompt must be held constant across levels.
 
-**Verdict:** Could be a level if you want to test "does compressing retrieved context beat raw truncation?" within the same 3000-char budget.
+**Verdict:** Could be a level if you want to test "does compressing retrieved context beat raw truncation?" within the same MAX_CONTEXT_CHARS budget.
 
 ---
 

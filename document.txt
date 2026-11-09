@@ -1,0 +1,89 @@
+# Cluster Operations Manual
+
+## 1. Introduction
+
+This document describes operational procedures for the NovaCluster distributed computing platform. It covers node provisioning, cluster restart, error handling, and security configuration. Operators should read sections 1 through 4 before performing any production changes.
+
+NovaCluster is designed for high availability across multiple availability zones. Each cluster consists of a control plane and worker nodes. The control plane manages scheduling, while worker nodes execute containerized workloads.
+
+## 2. Cluster Restart Procedure
+
+To restart a NovaCluster, follow these steps in order:
+
+1. Drain all worker nodes using `kubectl drain --ignore-daemonsets`.
+2. Stop the control plane services with `novactl stop --control-plane`.
+3. Verify all pods are terminated: `kubectl get pods --all-namespaces`.
+4. Start the control plane: `novactl start --control-plane`.
+5. Uncordon worker nodes: `kubectl uncordon <node-name>`.
+6. Verify cluster health: `novactl health-check --full`.
+
+The full restart typically takes 8–12 minutes depending on cluster size. Do not skip the drain step, as unscheduled pods may fail to reschedule.
+
+### 2.1 Error Codes During Restart
+
+| Error Code | Meaning | Resolution |
+|------------|---------|------------|
+| ERR-001 | Control plane timeout | Retry `novactl start` after 2 minutes |
+| ERR-002 | Node drain blocked | Check for pending pod disruption budgets |
+| ERR-003 | Health check failure | Review control plane logs in /var/log/nova/ |
+| ERR-004 | Certificate expired | Rotate certificates with `novactl cert-rotate` |
+
+If you encounter ERR-003 during step 6, check the control plane logs before proceeding. A failed health check usually indicates a misconfigured network policy.
+
+## 3. Node Provisioning
+
+New worker nodes can be added using the NovaCluster CLI:
+
+```
+novactl node add --type=worker --count=3 --zone=us-east-1a
+```
+
+Supported node types:
+- `worker-standard`: General purpose, 4 vCPU, 16 GB RAM
+- `worker-highmem`: Memory-intensive workloads, 8 vCPU, 64 GB RAM
+- `worker-gpu`: GPU-enabled, 8 vCPU, 32 GB RAM, 1x NVIDIA A100
+
+Nodes are provisioned with the default security group `nova-default-sg`. This group allows inbound SSH on port 22 and HTTPS on port 443 only.
+
+### 3.1 Security Group Configuration
+
+To modify security rules, edit `/etc/nova/security-groups.conf` and run:
+
+```
+novactl sg apply --config /etc/nova/security-groups.conf
+```
+
+Changes take effect immediately on new nodes. Existing nodes require a restart to pick up new security rules.
+
+## 4. Troubleshooting
+
+### 4.1 Pod CrashLoopBackOff
+
+A pod in CrashLoopBackOff state usually indicates an application error, not a cluster issue. Check pod logs:
+
+```
+kubectl logs <pod-name> --previous
+```
+
+Common causes:
+- Missing environment variables
+- Incorrect image tag
+- Resource limits too low
+
+### 4.2 Certificate Renewal
+
+Certificates expire every 90 days. Renew them before expiry:
+
+```
+novactl cert-renew --all-nodes
+```
+
+Failed renewals produce ERR-004 in the control plane logs. If certificates expire completely, the cluster becomes unreachable and manual intervention is required.
+
+## 5. Glossary
+
+- **Control plane**: The management layer that schedules workloads.
+- **Worker node**: A machine that runs containerized workloads.
+- **Drain**: The process of safely evicting pods from a node.
+- **Uncordon**: Marking a node as schedulable again after maintenance.
+- **Pod disruption budget**: A policy that limits how many pods can be down simultaneously.

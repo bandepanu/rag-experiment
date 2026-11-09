@@ -85,6 +85,83 @@ To isolate which RAG features actually matter, we run a controlled experiment on
 | 5 | Full-context baseline: no retrieval, whole document in prompt (constrained to same window) |
 | 6 | All advanced: hybrid + parent-child + rerank + query expansion |
 
+## Key Terms & Glossary
+
+The following terms are used throughout the experiment script and logs. They are defined here so the levels table and constants table are readable without outside knowledge.
+
+### Bi-encoder (Embedder)
+A model that encodes the **query** and each **document chunk independently** into separate vectors. At search time, the query vector is compared against all pre-computed chunk vectors using cosine similarity.  
+**Pros:** Fast — chunks are embedded once at index time; search is just vector math.  
+**Cons:** The query and chunk never "see" each other during encoding, so subtle relationships (negation, specific entity binding, exact phrases) can be missed.  
+**In this script:** `Embedder` + `VectorStore`.
+
+### Cross-encoder (Reranker)
+A model that takes the **query and a candidate chunk together as a single input pair** and outputs a single relevance score. Because both texts are processed jointly (self-attention across both), it is more accurate than a bi-encoder but much slower — it cannot pre-compute scores, so it is applied only to a small candidate pool.  
+**In this script:** `Reranker`, applied at levels 3 and 6 over the top 50 hybrid candidates.
+
+### Dense retrieval (vector search)
+Search by converting text into high-dimensional vectors and finding chunks whose vectors are closest to the query vector. Good for semantic meaning (e.g., "how do I restart the cluster?" matches "cluster reboot procedure" despite different words). Weak at exact terms (error codes, product names, acronyms).
+
+### Sparse retrieval (BM25)
+Search by matching exact words/terms using statistical frequency (Okapi BM25). Good for exact terms ("ERR-003", "worker-gpu", "novactl"). Weak at semantic paraphrase.
+
+### Hybrid search (vector + BM25, fused with RRF)
+Runs dense and sparse search in parallel, producing two ranked lists, then fuses them into one. This captures both semantic matches and exact-term matches. In this script, fusion uses Reciprocal Rank Fusion.
+
+### RRF (Reciprocal Rank Fusion)
+A formula for fusing ranked lists without needing to compare raw scores (which are on different scales for vector similarity vs. BM25). For each document, score = sum of `1 / (k + rank)` across all lists where it appears, where `k` is a smoothing constant (60 in this script). Documents that rank highly in multiple lists rise to the top.
+
+### Parent-child retrieval
+The document is chunked twice: small **children** (512 chars) for retrieval, larger **parents** (1,536 chars) for context. At search time, the best children are found, then the **parent chunks containing those children** are returned to the LLM. A child may contain a keyword match but lack surrounding context; the parent gives the model the full section around the match.  
+**In this script:** Levels 2 and 6. Child-to-parent mapping is built via character-offset containment (`build_child_to_parent_map`).
+
+### Query expansion / multi-query
+The LLM rewrites the user's original question into 2–3 alternative phrasings. Each variant is searched separately, and results are fused. Helps when the user's wording differs from the document's wording.  
+**In this script:** Level 4.
+
+### Full-context baseline (level 5)
+No retrieval at all. The entire document (capped at `MAX_CONTEXT_CHARS`) is stuffed into the prompt as context. This answers: "Would the model do just as well reading everything without any retrieval?"
+
+### Context window cap (`MAX_CONTEXT_CHARS`)
+A hard limit on how much context text is passed to the LLM. In this script it is **derived** from retrieval parameters, with a 10% buffer for headroom:
+
+```
+CHILD_CONTEXT_CHARS   = TOP_K * (CHUNK_SIZE + overhead)
+PARENT_CONTEXT_CHARS  = max(3, TOP_K // 2) * (PARENT_CHUNK_SIZE + overhead)
+RAW_CAP               = max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS)
+MAX_CONTEXT_CHARS     = int(RAW_CAP * 1.10)   # 10% buffer
+```
+
+With `TOP_K=5`, `CHUNK_SIZE=512`, `PARENT_CHUNK_SIZE=1536`, `overhead=120`:
+- Child budget: 5 × (512 + 120) = 3,160
+- Parent budget: 3 × (1536 + 120) = 4,968
+- Raw cap: 4,968
+- With 10% buffer: **5,464 characters**
+
+This is enough for 5 child chunks or up to 3 whole parent chunks plus formatting overhead. The cap is identical across all levels so context capacity never confounds the comparison.
+
+At parent-child levels (2 and 6), whole parents are selected greedily by score until the next parent would exceed the cap. Parents are never truncated mid-text — if only one to three parents fit, only those are returned.
+
+### Thinking level / reasoning effort (`THINKING_LEVEL`)
+A fixed parameter sent to the LLM (via OpenRouter's `reasoning={"effort": "low"}`) controlling how much reasoning the model performs before answering. Held constant across all levels so model reasoning quality does not confound the retrieval comparison.
+
+### Chunking (child vs. parent)
+Splitting a document into pieces for search and context. **Child chunks** (512 chars) are the search unit — small enough for precise vector matching. **Parent chunks** (1,536 chars) are the context unit — large enough to preserve surrounding text around a match.
+
+### Top-k (`TOP_K`)
+The final number of chunks passed to the LLM as context after all retrieval, fusion, and reranking is done.
+
+### Candidate-k (`HYBRID_TOP_K`)
+The number of candidates retrieved from each index (vector and BM25) **before** fusion and reranking. The final `TOP_K` is selected from this larger pool.
+
+### Interrelated constants (validation)
+The script enforces these relationships at startup:
+- `CHUNK_OVERLAP < CHUNK_SIZE`
+- `PARENT_CHUNK_OVERLAP < PARENT_CHUNK_SIZE`
+- `PARENT_CHUNK_SIZE > CHUNK_SIZE`
+- `HYBRID_TOP_K >= TOP_K`
+- `TOP_K > 0`
+
 ### Output
 
 Each run writes to `results/level_<N>_<timestamp>.jsonl` — one JSON line per eval question — containing the answer, retrieved chunk IDs/scores, context character count, truncation flag, latency, and the full config dict.
@@ -109,7 +186,11 @@ The following are fixed for every level and recorded in every `RunResult.config`
 | `PARENT_CHUNK_OVERLAP` | 200 characters | Parent chunk overlap |
 | `TOP_K` | 5 | Final chunks passed to LLM |
 | `HYBRID_TOP_K` | 50 | Candidate pool before rerank/final cut |
-| `MAX_CONTEXT_CHARS` | 3000 | Hard cap on context section passed to LLM |
+| `CHUNK_CONTEXT_OVERHEAD` | 120 chars | Per-chunk formatting overhead (header + separator) |
+| `CONTEXT_BUFFER_RATIO` | 1.10 | 10% headroom multiplier on the derived cap |
+| `CHILD_CONTEXT_CHARS` | `TOP_K * (CHUNK_SIZE + overhead)` ≈ 3,160 | Derived context budget for child-chunk levels |
+| `PARENT_CONTEXT_CHARS` | `max(3, TOP_K // 2) * (PARENT_CHUNK_SIZE + overhead)` ≈ 4,968 | Derived context budget for parent-chunk levels |
+| `MAX_CONTEXT_CHARS` | `int(max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS) * 1.10)` ≈ 5,464 | Hard cap on context section passed to LLM (derived, with 10% buffer) |
 | `THINKING_LEVEL` | `"low"` | Reasoning effort passed to LLM on every call |
 | `PROMPT_TEMPLATE` | See script | Prompt template |
 | `EVAL_QUESTIONS` | See script | Fixed set of questions |
@@ -126,17 +207,17 @@ The following are fixed for every level and recorded in every `RunResult.config`
 1. The document is chunked twice: into children (512 chars, with overlap) and parents (1536 chars, with overlap).
 2. Each child is mapped to the parent(s) that contain it.
 3. Vector search runs on children (same retrieval unit as level 0).
-4. The top-K children are mapped to their unique parents.
-5. Context is built from those parent chunks, then capped at `MAX_CONTEXT_CHARS` like every other level.
+4. The top-K children are mapped to their parent chunks. Parents are deduplicated (keeping the best child score per parent).
+5. Whole parents are selected greedily by descending score until the next parent would exceed `MAX_CONTEXT_CHARS`. Parents are never truncated mid-text.
 
 **Progressive position:** Placed at level 2 (after hybrid, before reranking) because it isolates "does structural context enrichment improve answers?" independently of ranking quality or query rewriting. Level 6 combines it with hybrid, reranking, and query expansion.
 
 ### Context window constraint
 
-`MAX_CONTEXT_CHARS = 3000` caps the `{context}` section passed to the LLM at **every** level, including level 5 (full-context baseline). This removes the "large context window" advantage of commercial web chatbots so we assess only RAG retrieval/ranking features, not context capacity.
+`MAX_CONTEXT_CHARS` caps the `{context}` section passed to the LLM at **every** level, including level 5 (full-context baseline). The cap is derived from retrieval parameters with a 10% buffer and is currently approximately **5,464 characters** — enough for 5 child chunks or up to 3 whole parent chunks. This removes the "large context window" advantage of commercial web chatbots so we assess only RAG retrieval/ranking features, not context capacity.
 
-- Level 5 gets the first 3000 chars of the whole document.
-- RAG levels (0–4, 6) get the first 3000 chars of retrieved chunks (child or parent depending on level).
+- Level 5 gets the first ~5,464 chars of the whole document.
+- RAG levels (0–4, 6) get up to ~5,464 chars of retrieved chunks (child or parent depending on level).
 - `fit_context()` truncates at a newline or sentence boundary where possible.
 - Each `RunResult` records `context_chars` and `truncated` so we can see when the cap bit.
 
@@ -215,7 +296,61 @@ Without an OpenRouter key, temporarily set `LLM_BACKEND = "stub"` to test the pi
 
 The following diagrams and pseudo code describe the experiment architecture implemented in `rag_experiment.py`. They live here (rather than in the Python file) so they can evolve independently of code edits without risking doc drift.
 
-### Diagram 1: Level pipeline — how a question flows through each level
+### Diagram 1: Experiment loop — end-to-end flow from CLI to results
+
+```mermaid
+flowchart TD
+    subgraph Constants["Constants (fixed across all levels)"]
+    C1[Model: gpt-4o-mini via OpenRouter]
+    C2[Embedding: all-MiniLM-L6-v2]
+    C3[Chunk: 512 child / 1536 parent]
+    C4[Context cap: MAX_CONTEXT_CHARS]
+    C5[Thinking: low]
+    end
+
+    M[main()] --> E[Experiment level 0-6]
+    E --> RQ[run_all()]
+    RQ --> RQQ[run_question()]
+    RQQ --> RET[retrieve()]
+    RET --> BC[build_context()]
+    BC --> FC[fit_context cap MAX_CONTEXT_CHARS]
+    FC --> LLM[LLM generate reasoning=low]
+    LLM --> RR[RunResult]
+    RR --> SR[save_results JSONL]
+
+    classDef const fill:#e1f5e1,stroke:#333;
+    classDef proc fill:#e3f2fd,stroke:#333;
+    class C1,C2,C3,C4,C5 const;
+    class M,E,RQ,RQQ,RET,BC,FC,LLM,RR,SR proc;
+```
+
+### Diagram 2: Retrieval level branching — inside `retrieve()`
+
+```mermaid
+flowchart LR
+    Q[Question]
+    Q --> L0[Level 0: vector only]
+    Q --> L1[Level 1: hybrid vector+BM25]
+    Q --> L2[Level 2: hybrid → parent chunks]
+    Q --> L3[Level 3: hybrid + rerank]
+    Q --> L4[Level 4: hybrid + query expansion]
+    Q --> L5[Level 5: full doc no retrieval]
+    Q --> L6[Level 6: all advanced]
+
+    L0 --> CH[Child chunks]
+    L1 --> CH
+    L2 --> PH[Parent chunks]
+    L3 --> CH
+    L4 --> CH
+    L5 --> FD[Full document capped]
+    L6 --> PH
+
+    CH --> FCX[fit_context ≤ MAX_CONTEXT_CHARS]
+    PH --> FCX
+    FD --> FCX
+```
+
+### Diagram 3: ASCII level pipeline — how a question flows through each level
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -247,7 +382,7 @@ The following diagrams and pseudo code describe the experiment architecture impl
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  fit_context(): cap at MAX_CONTEXT_CHARS (3000), cut at newline     │
+│  fit_context(): cap at MAX_CONTEXT_CHARS, cut at newline     │
 │  or sentence boundary. All levels get the same budget.              │
 └─────────────────────────────────────────────────────────────────────┘
          │
@@ -383,7 +518,7 @@ FUNCTION run_question(question):
         context = build_context(chunk_source, hits)
         retrieved_chunks = format_hits(hits, chunk_source)
 
-    context, truncated = fit_context(context, MAX_CONTEXT_CHARS=3000)
+    context, truncated = fit_context(context, MAX_CONTEXT_CHARS)
     context_chars = length(context)
 
     prompt = PROMPT_TEMPLATE.format(context=context, question=question)
@@ -430,7 +565,7 @@ FUNCTION build_child_to_parent_map(child_offsets, parent_offsets):
 ### Pseudo Code: `fit_context()` — context window cap
 
 ```
-FUNCTION fit_context(context, max_chars=3000):
+FUNCTION fit_context(context, max_chars=MAX_CONTEXT_CHARS):
     IF length(context) <= max_chars:
         RETURN context, False
 

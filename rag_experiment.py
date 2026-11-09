@@ -69,30 +69,70 @@ LLM_BACKEND = "openrouter"
 # is constant; only retrieval context changes between levels.
 LLM_MODEL_NAME = "openai/gpt-4o-mini"
 
+# ---------------------------------------------------------------------------
+# Core retrieval sizing (interrelated parameters)
+# ---------------------------------------------------------------------------
+
 # Child chunk size in characters. Child chunks are the retrieval unit at every level.
 CHUNK_SIZE = 512
 
-# Child chunk overlap in characters. Helps preserve context across chunk boundaries.
+# Child chunk overlap in characters. Must be smaller than CHUNK_SIZE to avoid
+# degenerate or duplicated chunks.
 CHUNK_OVERLAP = 50
 
 # Parent chunk size in characters. Parent chunks are the context unit at
-# parent-child levels (2 and 6). Larger than child chunks to provide surrounding context.
+# parent-child levels (2 and 6). Parent should be larger than child so it
+# provides surrounding context around a matching child.
 PARENT_CHUNK_SIZE = 1536
 
-# Parent chunk overlap in characters.
+# Parent chunk overlap in characters. Must be smaller than PARENT_CHUNK_SIZE.
 PARENT_CHUNK_OVERLAP = 200
 
-# Number of final chunks passed to the LLM as context. Fixed across all levels.
+# Final chunks passed to the LLM as context. Fixed across all levels.
 TOP_K = 5
 
-# Candidate pool size before rerank / final cut. Hybrid and query-expansion levels
-# retrieve HYBRID_TOP_K candidates, then narrow to TOP_K.
+# Candidate pool retrieved from each index (vector and BM25) before fusion
+# and reranking. Must be >= TOP_K so there are enough candidates to select from.
 HYBRID_TOP_K = 50
 
-# Hard cap on characters in the {context} section passed to the LLM.
-# Enforced at ALL levels, including the full-context baseline (level 5),
-# so context capacity never confounds the comparison.
-MAX_CONTEXT_CHARS = 3000
+# ---------------------------------------------------------------------------
+# Derived context window cap
+# ---------------------------------------------------------------------------
+
+# Approximate per-chunk overhead for context formatting:
+# "[Chunk i (score s)]\n" header + "\n\n---\n\n" separator per chunk.
+CHUNK_CONTEXT_OVERHEAD = 120
+
+# Extra headroom multiplier applied to the derived cap so the context window
+# is never exactly full and fit_context() has a little slack before truncating.
+CONTEXT_BUFFER_RATIO = 1.10
+
+# For child-chunk levels (0, 1, 3, 4): context = TOP_K * (CHUNK_SIZE + overhead)
+# For parent-chunk levels (2, 6): we target fitting at least 3 parent chunks
+# plus overhead. Each parent is roughly 3x a child, so we size the cap to hold
+# multiple whole parents rather than truncating them mid-text.
+CHILD_CONTEXT_CHARS = TOP_K * (CHUNK_SIZE + CHUNK_CONTEXT_OVERHEAD)
+PARENT_CONTEXT_CHARS = max(3, TOP_K // 2) * (PARENT_CHUNK_SIZE + CHUNK_CONTEXT_OVERHEAD)
+
+# Hard cap on context section passed to the LLM.
+# Derived from retrieval parameters so it scales with chunk size and top-k,
+# then multiplied by CONTEXT_BUFFER_RATIO for headroom.
+# Kept identical across ALL levels so context capacity never confounds results.
+MAX_CONTEXT_CHARS = int(max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS) * CONTEXT_BUFFER_RATIO)
+
+# ---------------------------------------------------------------------------
+# Validation of interrelated constants
+# ---------------------------------------------------------------------------
+
+assert CHUNK_OVERLAP < CHUNK_SIZE, "CHUNK_OVERLAP must be less than CHUNK_SIZE"
+assert PARENT_CHUNK_OVERLAP < PARENT_CHUNK_SIZE, "PARENT_CHUNK_OVERLAP must be less than PARENT_CHUNK_SIZE"
+assert PARENT_CHUNK_SIZE > CHUNK_SIZE, "PARENT_CHUNK_SIZE should be larger than CHUNK_SIZE"
+assert HYBRID_TOP_K >= TOP_K, "HYBRID_TOP_K must be >= TOP_K"
+assert TOP_K > 0, "TOP_K must be positive"
+
+# ---------------------------------------------------------------------------
+# LLM and backend settings
+# ---------------------------------------------------------------------------
 
 # Fixed reasoning effort passed to the LLM on every generate() call.
 # OpenRouter maps this to the model's native setting (reasoning_effort for
@@ -769,11 +809,19 @@ class Experiment:
         Level behavior:
           - Level 0: dense (vector) search only, return top_k child chunks.
           - Level 1: hybrid (vector + BM25 via RRF), return top_k child chunks.
-          - Level 2: hybrid search on children, map to parent chunks as context.
+          - Level 2: hybrid search on children, map to whole parent chunks as context.
           - Level 3: hybrid + cross-encoder reranking, return top_k child chunks.
           - Level 4: hybrid + query expansion (multi-query), return top_k child chunks.
           - Level 5: full-context baseline, no retrieval (returns empty).
           - Level 6: all advanced (hybrid + parent-child + rerank + expansion).
+
+        Parent-child selection (levels 2 and 6):
+          Retrieved children are mapped to their containing parent chunks.
+          Multiple children may map to the same parent, so parents are
+          deduplicated (keeping the best child score). Whole parents are then
+          selected greedily by descending score until the next parent would
+          exceed MAX_CONTEXT_CHARS. Parents are never truncated mid-text — if
+          only one parent fits, only one is returned.
         """
         # Level 5 is the full-context baseline: no retrieval at all.
         if self.level == 5:
@@ -832,14 +880,31 @@ class Experiment:
 
         if use_parents:
             # Map retrieved children to their containing parent chunks.
-            # Deduplicate parents since multiple children may map to the same parent.
-            seen: set = set()
-            parent_hits: List[Tuple[int, float]] = []
+            # Deduplicate parents: keep the best score per parent.
+            parent_best_score: Dict[int, float] = {}
             for child_idx, score in child_hits:
                 for parent_idx in self.child_to_parent[child_idx]:
-                    if parent_idx not in seen:
-                        seen.add(parent_idx)
-                        parent_hits.append((parent_idx, score))
+                    if parent_idx not in parent_best_score or score > parent_best_score[parent_idx]:
+                        parent_best_score[parent_idx] = score
+
+            # Sort parents by score descending.
+            sorted_parents = sorted(parent_best_score.items(), key=lambda x: -x[1])
+
+            # Greedily select whole parents that fit within MAX_CONTEXT_CHARS.
+            # Account for per-parent formatting overhead ("[Chunk i (score s)]\n"
+            # header + separator). Parents are never truncated mid-text.
+            parent_hits: List[Tuple[int, float]] = []
+            budget = MAX_CONTEXT_CHARS
+            for parent_idx, score in sorted_parents:
+                parent_text_len = len(self.parent_chunks[parent_idx]) + CHUNK_CONTEXT_OVERHEAD
+                if parent_text_len <= budget:
+                    parent_hits.append((parent_idx, score))
+                    budget -= parent_text_len
+                else:
+                    # Parent too large for remaining budget; skip it and try
+                    # the next smaller-scored parent (which may be shorter).
+                    continue
+
             return parent_hits, True
 
         return child_hits, False
