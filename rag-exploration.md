@@ -300,7 +300,7 @@ The following diagrams and pseudo code describe the experiment architecture impl
 
 ```mermaid
 flowchart TD
-    subgraph Constants["Constants (fixed across all levels)"]
+    subgraph Constants["Constants fixed across all levels"]
     C1[Model: gpt-4o-mini via OpenRouter]
     C2[Embedding: all-MiniLM-L6-v2]
     C3[Chunk: 512 child / 1536 parent]
@@ -308,11 +308,11 @@ flowchart TD
     C5[Thinking: low]
     end
 
-    M[main()] --> E[Experiment level 0-6]
-    E --> RQ[run_all()]
-    RQ --> RQQ[run_question()]
-    RQQ --> RET[retrieve()]
-    RET --> BC[build_context()]
+    M[main] --> E[Experiment level 0-6]
+    E --> RQ[run_all]
+    RQ --> RQQ[run_question]
+    RQQ --> RET[retrieve]
+    RET --> BC[build_context]
     BC --> FC[fit_context cap MAX_CONTEXT_CHARS]
     FC --> LLM[LLM generate reasoning=low]
     LLM --> RR[RunResult]
