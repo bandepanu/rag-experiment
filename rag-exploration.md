@@ -463,44 +463,44 @@ At level 2/6:
 
 ```
 FUNCTION retrieve(question):
-    IF level == 5:
-        RETURN [], False          # full-context baseline: no retrieval
+    IF level == 5:                          # level 5: full-context baseline
+        RETURN [], False                    # no retrieval
 
-    use_parents = (level IN {2, 6})
+    use_parents = (level IN {2, 6})         # levels 2, 6: parent-child context
 
-    IF level == 0:
+    IF level == 0:                          # level 0: naive RAG
         child_hits = dense_search(question, top_k=TOP_K)
-    ELSE IF level == 1:
+    ELSE IF level == 1:                     # level 1: hybrid RAG
         child_hits = hybrid_search(question, top_k=TOP_K, candidate_k=HYBRID_TOP_K)
-    ELSE IF level IN {2, 3, 4, 6}:
-        IF level == 4:
+    ELSE IF level IN {2, 3, 4, 6}:          # levels 2, 3, 4, 6: hybrid pool
+        IF level == 4:                      # level 4: query expansion
             # query expansion: generate variants, search each, fuse by RRF
             variants = [question] + LLM_generate_variants(question)
             all_hits = []
             FOR q IN variants:
                 all_hits.append(hybrid_search(q, top_k=HYBRID_TOP_K))
             child_hits = rrf_fuse(all_hits)[:HYBRID_TOP_K]
-        ELSE:
+        ELSE:                               # levels 2, 3, 6: hybrid only
             child_hits = hybrid_search(question, top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K)
 
-        IF reranker EXISTS:           # levels 3 and 6
+        IF reranker EXISTS:                 # levels 3, 6: reranker active
             child_hits = cross_encoder_rerank(question, child_hits, top_k=TOP_K)
-        ELSE:
+        ELSE:                               # level 2: no reranker
             child_hits = child_hits[:TOP_K]
-    ELSE:
+    ELSE:                                   # unreachable safety fallback
         child_hits = dense_search(question, top_k=TOP_K)
 
-    IF use_parents:
+    IF use_parents:                         # levels 2, 6: map to parents
         parent_hits = []
         seen = {}
         FOR (child_idx, score) IN child_hits:
             FOR parent_idx IN child_to_parent[child_idx]:
-                IF parent_idx NOT IN seen:
+                IF parent_idx NOT IN seen:  # deduplicate parents
                     seen.add(parent_idx)
                     parent_hits.append((parent_idx, score))
         RETURN parent_hits, True
 
-    RETURN child_hits, False
+    RETURN child_hits, False                # levels 0, 1, 3, 4: return children
 ```
 
 ### Pseudo Code: `run_question()` — end-to-end flow per question
@@ -509,10 +509,10 @@ FUNCTION retrieve(question):
 FUNCTION run_question(question):
     start = timer()
 
-    IF level == 5:
+    IF level == 5:                          # level 5: full-context baseline
         context = full_document            # no retrieval
         retrieved_chunks = []
-    ELSE:
+    ELSE:                                   # levels 0, 1, 2, 3, 4, 6: all retrieval levels
         hits, use_parents = retrieve(question)
         chunk_source = parent_chunks IF use_parents ELSE child_chunks
         context = build_context(chunk_source, hits)
@@ -546,19 +546,19 @@ FUNCTION build_child_to_parent_map(child_offsets, parent_offsets):
         # Find parents that fully contain this child
         containing = [p_idx FOR p_idx, (p_start, p_end) IN parent_offsets
                       IF p_start <= c_start AND c_end <= p_end]
-        IF containing NOT EMPTY:
+        IF containing NOT EMPTY:           # exact containment found
             mapping.append(containing)
-            CONTINUE
+            CONTINUE                       # skip fallback path
 
         # Fallback: parent with maximum character overlap
         best_idx = 0
         best_overlap = -1
         FOR p_idx, (p_start, p_end) IN parent_offsets:
             overlap = min(c_end, p_end) - max(c_start, p_start)
-            IF overlap > best_overlap:
+            IF overlap > best_overlap:     # track max overlap parent
                 best_overlap = overlap
                 best_idx = p_idx
-        mapping.append([best_idx])
+        mapping.append([best_idx])         # use best-overlap parent as fallback
     RETURN mapping
 ```
 
@@ -566,22 +566,22 @@ FUNCTION build_child_to_parent_map(child_offsets, parent_offsets):
 
 ```
 FUNCTION fit_context(context, max_chars=MAX_CONTEXT_CHARS):
-    IF length(context) <= max_chars:
+    IF length(context) <= max_chars:        # no truncation needed
         RETURN context, False
 
     cut = context[0:max_chars]
 
     # Prefer newline boundary within last 200 chars
     newline_idx = cut.rfind("\n", start=max(0, max_chars-200))
-    IF newline_idx != -1:
+    IF newline_idx != -1:                   # cut at newline boundary
         RETURN cut[0:newline_idx], True
 
     # Fallback: sentence end
     sentence_idx = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-    IF sentence_idx != -1:
+    IF sentence_idx != -1:                  # cut at sentence end
         RETURN cut[0:sentence_idx+1], True
 
-    RETURN cut, True
+    RETURN cut, True                        # hard cut at max_chars (no clean boundary found)
 ```
 
 ---
