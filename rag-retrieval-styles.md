@@ -154,6 +154,20 @@ Constants enforced across all levels: model, document, embedding, chunking, prom
 
 ---
 
+### H. Embedding model variation (BGE, E5, Cohere, etc.)
+
+**What it is:** Swap the embedding model used for both document chunks and query encoding — e.g., from `all-MiniLM-L6-v2` to BGE-base, BGE-large, E5-large, Cohere embed, or a domain-fine-tuned model.
+
+**Why not covered:** The embedding model (`EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"`) is a module-level constant enforced identically across all levels. Changing it would violate the core principle of this experiment: hold everything constant except the feature under test. If the embedding model varies per level, answer differences cannot be attributed to retrieval strategy alone.
+
+**Complexity to add:** Medium. Requires reloading the embedding model, re-encoding the entire document, potentially handling different vector dimensions, and verifying normalization behavior (cosine similarity vs. dot product assumptions).
+
+**Fit with constants:** Poor. Directly contradicts the constant-enforcement principle. `EMBEDDING_MODEL_NAME` is recorded in every `RunResult.config` precisely because it must not vary between levels.
+
+**Verdict:** Separate experiment — build a matrix of embedding models × retrieval levels if you want to test whether better embeddings improve RAG quality independently of retrieval features.
+
+---
+
 ## Summary table: add vs defer
 
 | Style | Add now? | Complexity | Breaks constants? | Best for |
@@ -166,6 +180,7 @@ Constants enforced across all levels: model, document, embedding, chunking, prom
 | Metadata filtering | No | Low | N/A | Multi-document corpus |
 | Context compression | Maybe | Low-medium | Moderate | Test compression vs truncation |
 | GraphRAG | Deferred | High | Yes | Separate experiment, multi-doc |
+| Embedding model variation | No | Medium | Yes | Separate experiment (model × retrieval matrix) |
 
 ---
 
