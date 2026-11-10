@@ -246,7 +246,8 @@ All LLM calls route through OpenRouter (`https://openrouter.ai/api/v1`) using th
 cd /home/psg/.pi/rag-experiment
 
 # 1. Place your document at document.txt
-# 2. Fill in EVAL_QUESTIONS in the script with 3–5 questions about that document
+# 2. Create questions.json with your evaluation questions (see questions.json.example)
+#    or edit EVAL_QUESTIONS in the script as fallback
 # 3. Install dependencies
 pip install sentence-transformers rank_bm25 numpy openai
 
@@ -254,7 +255,7 @@ pip install sentence-transformers rank_bm25 numpy openai
 export OPENROUTER_API_KEY="sk-or-..."
 
 # 5. Compare naive RAG vs full-context baseline (identical model, context cap, thinking level)
-python rag_experiment.py --levels 0 5
+python rag_experiment.py --levels 0 5 --questions-file questions.json
 
 # 6. Add progressive features one at a time
 python rag_experiment.py --level 1   # + hybrid (vector + BM25)
@@ -262,9 +263,10 @@ python rag_experiment.py --level 2   # + parent-child (return parent chunks)
 python rag_experiment.py --level 3   # + cross-encoder reranking
 python rag_experiment.py --level 4   # + query expansion (multi-query)
 python rag_experiment.py --level 6   # all advanced combined
-```
 
 Without an OpenRouter key, temporarily set `LLM_BACKEND = "stub"` to test the pipeline without API calls.
+
+**Questions:** Questions are held constant across all levels for fair A/B comparison. Load them from a JSON file (`["Q1", "Q2", ...]`) via `--questions-file`, or use the `EVAL_QUESTIONS` constant in the script as fallback.
 
 
 ## Deferred: GraphRAG

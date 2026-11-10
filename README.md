@@ -33,9 +33,9 @@ export OPENROUTER_API_KEY="sk-or-..."
 
 ```bash
 # 1. Place your document at document.txt
-# 2. Edit EVAL_QUESTIONS in rag_experiment.py with questions about your document
+# 2. Create questions.json with your evaluation questions (see questions.json.example)
 # 3. Run baseline comparison: naive RAG vs full-context baseline
-python rag_experiment.py --levels 0 5
+python rag_experiment.py --levels 0 5 --questions-file questions.json
 
 # 4. Add progressive features one at a time
 python rag_experiment.py --level 1   # hybrid (vector + BM25)
@@ -63,9 +63,10 @@ python rag_experiment.py --level 6   # all advanced combined
 - Embedding: `sentence-transformers/all-MiniLM-L6-v2`
 - Chunk size: 512 chars (child), 1536 chars (parent)
 - Top-K: 5 chunks
-- Context cap: 3000 chars (all levels, including baseline)
+- Context cap: ~5,464 chars with 10% buffer (all levels, including baseline)
 - Thinking level: `low` (via OpenRouter `reasoning={"effort": "low"}`)
-- Prompt template and eval questions: fixed
+- Prompt template: fixed
+- Eval questions: fixed across all levels (load from `--questions-file` JSON or `EVAL_QUESTIONS` constant)
 
 See `rag-exploration.md` for the full constants table and enforcement principle.
 

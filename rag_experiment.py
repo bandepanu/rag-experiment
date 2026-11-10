@@ -167,10 +167,16 @@ Answer:
 
 # Fixed evaluation questions. Same questions are asked at every level so answers
 # are directly comparable. Fill in with questions about your document.
+# These are used as the fallback unless --questions-file is provided.
 EVAL_QUESTIONS: List[str] = [
     "What is this document about?",
     "Can you summarize the key points?",
 ]
+
+# Path to a JSON file containing a list of question strings.
+# If set (or passed via --questions-file), questions are loaded from this file
+# instead of EVAL_QUESTIONS. Format: ["Q1", "Q2", "Q3"].
+QUESTIONS_FILE: Optional[Path] = None
 
 # Directory for experiment output. One JSONL file per level per run.
 RESULTS_DIR = Path("results")
@@ -743,11 +749,13 @@ class Experiment:
             OpenRouter connection metadata, recorded for reproducibility.
     """
 
-    def __init__(self, level: int):
+    def __init__(self, level: int, questions: Optional[List[str]] = None):
         self.level = level
 
         # Record all constants as instance attributes so they appear verbatim
         # in every RunResult.config — not just defined at module level.
+        # Questions are held constant across all levels for fair A/B comparison.
+        self.questions = questions if questions is not None else EVAL_QUESTIONS
         self.document_path = str(DOCUMENT_PATH)
         self.embedding_model_name = EMBEDDING_MODEL_NAME
         self.llm_backend = LLM_BACKEND
@@ -995,9 +1003,9 @@ class Experiment:
         """Run all evaluation questions at this experiment level.
 
         Returns:
-            List of RunResult, one per question in EVAL_QUESTIONS.
+            List of RunResult, one per question in self.questions.
         """
-        return [self.run_question(q) for q in EVAL_QUESTIONS]
+        return [self.run_question(q) for q in self.questions]
 
 
 def save_results(results: List[RunResult], level: int) -> Path:
@@ -1051,14 +1059,15 @@ def main():
       4. Prints a summary of each answer to stdout.
 
     CLI flags:
-        --level N     Run a single level (0-6).
-        --levels N N  Run multiple levels.
-        --document    Path to the document under test (overrides DOCUMENT_PATH).
+        --level N          Run a single level (0-6).
+        --levels N N       Run multiple levels.
+        --document         Path to the document under test (overrides DOCUMENT_PATH).
+        --questions-file   Path to JSON file with list of question strings (overrides EVAL_QUESTIONS).
 
     All other experimental conditions are fixed by module-level constants.
     """
-    # Allow CLI override of document path (keeps everything else constant)
-    global DOCUMENT_PATH
+    # Allow CLI override of document path and questions (keeps everything else constant)
+    global DOCUMENT_PATH, QUESTIONS_FILE
     parser = argparse.ArgumentParser(description="Progressive RAG experiment on one document")
     parser.add_argument("--level", type=int, choices=list(LEVEL_DESCRIPTIONS.keys()),
                         help="Run a single level")
@@ -1066,16 +1075,30 @@ def main():
                         help="Run multiple levels")
     parser.add_argument("--document", type=Path, default=DOCUMENT_PATH,
                         help="Path to the single document (overrides CONSTANTS)")
+    parser.add_argument("--questions-file", type=Path, default=QUESTIONS_FILE,
+                        help="JSON file with list of question strings (overrides EVAL_QUESTIONS)")
     args = parser.parse_args()
 
     if args.document != DOCUMENT_PATH:
         DOCUMENT_PATH = args.document
 
+    if args.questions_file is not None:
+        QUESTIONS_FILE = args.questions_file
+
+    # Load questions from JSON file if provided, otherwise use EVAL_QUESTIONS constant
+    if QUESTIONS_FILE is not None:
+        with QUESTIONS_FILE.open("r", encoding="utf-8") as f:
+            questions = json.load(f)
+        if not isinstance(questions, list) or not all(isinstance(q, str) for q in questions):
+            raise ValueError(f"{QUESTIONS_FILE} must contain a JSON list of strings: [\"Q1\", \"Q2\", ...]")
+    else:
+        questions = EVAL_QUESTIONS
+
     levels = args.levels or ([args.level] if args.level is not None else list(LEVEL_DESCRIPTIONS.keys()))
 
     for level in levels:
         print(f"\n=== Level {level}: {LEVEL_DESCRIPTIONS[level]} ===")
-        exp = Experiment(level)
+        exp = Experiment(level, questions=questions)
         results = exp.run_all()
         path = save_results(results, level)
         print(f"Saved {len(results)} results to {path}")
