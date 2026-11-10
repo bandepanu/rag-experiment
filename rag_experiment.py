@@ -165,6 +165,29 @@ assert HYBRID_TOP_K >= TOP_K, "HYBRID_TOP_K must be >= TOP_K"
 assert TOP_K > 0, "TOP_K must be positive"
 
 # ---------------------------------------------------------------------------
+# Confidence-based feature toggles
+# ---------------------------------------------------------------------------
+
+# If set (not None), abstain from LLM generation when top chunk score < this value.
+# Return "I don't know based on the provided document." instead.
+# Reasonable starting values: 0.25-0.40 for cosine similarity; None disables.
+CONFIDENCE_THRESHOLD = None
+
+# If set (not None), only apply query expansion at level 4 when top hybrid score < this value.
+# High-confidence retrieval skips expansion to avoid query drift.
+# Reasonable starting values: 0.40-0.70; None disables (always expand).
+EXPANSION_THRESHOLD = None
+
+# If True, sort context chunks by score descending and include score prominently
+# so higher-scored chunks appear first and survive context-window truncation.
+# False preserves retrieval order (already score-descended in most paths).
+WEIGHT_CONTEXT_BY_SCORE = False
+
+# If True, weight Reciprocal Rank Fusion scores by chunk similarity scores.
+# False uses pure RRF (1/(k+rank)) without score weighting.
+USE_WEIGHTED_RRF = False
+
+# ---------------------------------------------------------------------------
 # LLM and backend settings
 # ---------------------------------------------------------------------------
 
@@ -610,7 +633,7 @@ Queries:"""
 # ---------------------------------------------------------------------------
 
 def reciprocal_rank_fusion(
-    lists: List[List[Tuple[int, float]]], k: int = 60
+    lists: List[List[Tuple[int, float]]], k: int = 60, weight_by_score: bool = False
 ) -> List[Tuple[int, float]]:
     """Fuse multiple ranked lists using Reciprocal Rank Fusion (RRF).
 
@@ -622,6 +645,8 @@ def reciprocal_rank_fusion(
     Args:
         lists: A list of ranked lists, each being a list of (doc_id, score).
         k: RRF smoothing constant (default 60).
+        weight_by_score: If True, multiply each RRF contribution by the chunk's
+            retrieval score, giving higher-scored chunks more influence.
 
     Returns:
         A single ranked list of (doc_id, rrf_score) pairs sorted by descending
@@ -629,8 +654,11 @@ def reciprocal_rank_fusion(
     """
     scores: Dict[int, float] = {}
     for ranked_list in lists:
-        for rank, (doc_id, _) in enumerate(ranked_list, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        for rank, (doc_id, score) in enumerate(ranked_list, start=1):
+            base = 1.0 / (k + rank)
+            if weight_by_score:
+                base = base * score
+            scores[doc_id] = scores.get(doc_id, 0.0) + base
     return sorted(scores.items(), key=lambda x: -x[1])
 
 
@@ -661,6 +689,7 @@ def retrieve_hybrid(
     bm25: BM25Index,
     top_k: int = TOP_K,
     candidate_k: int = HYBRID_TOP_K,
+    weight_by_score: bool = False,
 ) -> List[Tuple[int, float]]:
     """Hybrid retrieval: dense vector search + BM25 keyword search, fused by RRF.
 
@@ -675,6 +704,7 @@ def retrieve_hybrid(
         bm25: BM25Index built over document chunks.
         top_k: Number of results to return after fusion.
         candidate_k: Number of candidates to retrieve from each index before fusion.
+        weight_by_score: If True, weight RRF contributions by chunk scores.
 
     Returns:
         List of (chunk_index, rrf_score) pairs, sorted by descending score,
@@ -683,7 +713,9 @@ def retrieve_hybrid(
     q_emb = embedder.encode([question])[0]
     vector_hits = vs.search(q_emb, top_k=candidate_k)
     bm25_hits = bm25.search(question, top_k=candidate_k)
-    fused = reciprocal_rank_fusion([vector_hits, bm25_hits])
+    fused = reciprocal_rank_fusion(
+        [vector_hits, bm25_hits], weight_by_score=weight_by_score
+    )
     return fused[:top_k]
 
 
@@ -691,7 +723,7 @@ def retrieve_hybrid(
 # Context builder
 # ---------------------------------------------------------------------------
 
-def build_context(chunks: List[str], hits: List[Tuple[int, float]]) -> str:
+def build_context(chunks: List[str], hits: List[Tuple[int, float]], weight_by_score: bool = False) -> str:
     """Assemble retrieved chunks into a single context string for the prompt.
 
     Each chunk is prefixed with its index and score so the model can see
@@ -700,10 +732,15 @@ def build_context(chunks: List[str], hits: List[Tuple[int, float]]) -> str:
     Args:
         chunks: List of chunk text strings (either child or parent chunks).
         hits: List of (chunk_index, score) pairs from retrieval.
+        weight_by_score: If True, sort hits by score descending before building
+            context so higher-scored chunks appear first and survive context
+            truncation (fit_context) better.
 
     Returns:
         A formatted context string with one chunk per section.
     """
+    if weight_by_score:
+        hits = sorted(hits, key=lambda x: -x[1])
     parts = []
     for doc_id, score in hits:
         parts.append(f"[Chunk {doc_id} (score {score:.3f})]\n{chunks[doc_id]}")
@@ -772,6 +809,8 @@ class RunResult:
     retrieved_chunks: List[dict]
     context_chars: int
     truncated: bool
+    top_chunk_score: Optional[float]
+    abstained: bool
     latency_seconds: float
     timestamp: str
 
@@ -818,6 +857,11 @@ class Experiment:
         self.openrouter_base_url = OPENROUTER_BASE_URL
         self.openrouter_api_key_set = bool(OPENROUTER_API_KEY)
         self.openrouter_headers = OPENROUTER_HEADERS
+        # Confidence-based feature toggles
+        self.confidence_threshold = CONFIDENCE_THRESHOLD
+        self.expansion_threshold = EXPANSION_THRESHOLD
+        self.weight_context_by_score = WEIGHT_CONTEXT_BY_SCORE
+        self.use_weighted_rrf = USE_WEIGHTED_RRF
         self.parent_chunk_size = PARENT_CHUNK_SIZE
         self.parent_chunk_overlap = PARENT_CHUNK_OVERLAP
 
@@ -896,26 +940,43 @@ class Experiment:
             child_hits = retrieve_hybrid(
                 question, self.embedder, self.vs, self.bm25,
                 top_k=TOP_K, candidate_k=HYBRID_TOP_K,
+                weight_by_score=self.use_weighted_rrf,
             )
         elif self.level in (2, 3, 4, 6):
             # Levels 2, 3, 4, 6 all start from a hybrid candidate pool over children.
             if self.level == 4:
-                # Query expansion: retrieve for the original question plus
-                # LLM-generated variants, then fuse all result lists by RRF.
-                variants = expand_query(self.llm, question)
-                all_hits = []
-                for q in variants:
-                    h = retrieve_hybrid(
-                        q, self.embedder, self.vs, self.bm25,
-                        top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K,
+                # Conditional query expansion: if EXPANSION_THRESHOLD is set and
+                # the original-question hybrid search already returns a
+                # high-confidence hit, skip expansion to avoid query drift.
+                base_hits = retrieve_hybrid(
+                    question, self.embedder, self.vs, self.bm25,
+                    top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K,
+                    weight_by_score=self.use_weighted_rrf,
+                )
+                top_score = base_hits[0][1] if base_hits else 0.0
+                if self.expansion_threshold is not None and top_score >= self.expansion_threshold:
+                    child_hits = base_hits
+                else:
+                    # Query expansion: retrieve for the original question plus
+                    # LLM-generated variants, then fuse all result lists by RRF.
+                    variants = expand_query(self.llm, question)
+                    all_hits = [base_hits]
+                    for q in variants:
+                        h = retrieve_hybrid(
+                            q, self.embedder, self.vs, self.bm25,
+                            top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K,
+                            weight_by_score=self.use_weighted_rrf,
+                        )
+                        all_hits.append(h)
+                    fused = reciprocal_rank_fusion(
+                        all_hits, weight_by_score=self.use_weighted_rrf
                     )
-                    all_hits.append(h)
-                fused = reciprocal_rank_fusion(all_hits)
-                child_hits = fused[:HYBRID_TOP_K]
+                    child_hits = fused[:HYBRID_TOP_K]
             else:
                 child_hits = retrieve_hybrid(
                     question, self.embedder, self.vs, self.bm25,
                     top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K,
+                    weight_by_score=self.use_weighted_rrf,
                 )
 
             # Apply cross-encoder reranking only when the reranker exists
@@ -984,6 +1045,9 @@ class Experiment:
         """
         start = time.time()
 
+        abstained = False
+        top_chunk_score: Optional[float] = None
+
         if self.level == 5:
             # Full-context baseline: entire document as context (then capped).
             # No retrieval; the model must find the answer in the whole document.
@@ -992,24 +1056,48 @@ class Experiment:
         else:
             hits, use_parents = self.retrieve(question)
             context_chunks = self.parent_chunks if use_parents else self.child_chunks
-            context = build_context(context_chunks, hits)
-            retrieved_chunks = [
-                {
-                    "chunk_id": i,
-                    "score": s,
-                    "text": context_chunks[i][:200] + "...",
-                    "parent": use_parents,
-                }
-                for i, s in hits
-            ]
+
+            # Confidence thresholding: if top chunk score < CONFIDENCE_THRESHOLD,
+            # abstain from LLM generation and return "I don't know."
+            if hits:
+                top_chunk_score = hits[0][1]
+                if (
+                    self.confidence_threshold is not None
+                    and top_chunk_score < self.confidence_threshold
+                ):
+                    abstained = True
+                    context = ""
+                    context_chunks = []
+                    retrieved_chunks = []
+                else:
+                    context = build_context(
+                        context_chunks, hits, weight_by_score=self.weight_context_by_score
+                    )
+                    retrieved_chunks = [
+                        {
+                            "chunk_id": i,
+                            "score": s,
+                            "text": context_chunks[i][:200] + "...",
+                            "parent": use_parents,
+                        }
+                        for i, s in hits
+                    ]
+            else:
+                context = ""
+                context_chunks = []
+                retrieved_chunks = []
 
         # Enforce constant context window across ALL levels.
         context, truncated = fit_context(context, MAX_CONTEXT_CHARS)
         context_chars = len(context)
 
-        prompt = PROMPT_TEMPLATE.format(context=context, question=question)
-        answer = self.llm.generate(prompt, thinking_level=self.thinking_level)
-        latency = time.time() - start
+        if abstained:
+            answer = "I don't know based on the provided document."
+            latency = time.time() - start
+        else:
+            prompt = PROMPT_TEMPLATE.format(context=context, question=question)
+            answer = self.llm.generate(prompt, thinking_level=self.thinking_level)
+            latency = time.time() - start
 
         # Manual config dict records every held-fixed constant for
         # reproducibility. asdict(self) would fail because Experiment is not
@@ -1033,6 +1121,11 @@ class Experiment:
             "openrouter_base_url": self.openrouter_base_url,
             "openrouter_api_key_set": self.openrouter_api_key_set,
             "openrouter_headers": self.openrouter_headers,
+            # Confidence-based feature toggles
+            "confidence_threshold": self.confidence_threshold,
+            "expansion_threshold": self.expansion_threshold,
+            "weight_context_by_score": self.weight_context_by_score,
+            "use_weighted_rrf": self.use_weighted_rrf,
         }
 
         return RunResult(
@@ -1044,6 +1137,8 @@ class Experiment:
             retrieved_chunks=retrieved_chunks,
             context_chars=context_chars,
             truncated=truncated,
+            top_chunk_score=top_chunk_score,
+            abstained=abstained,
             latency_seconds=round(latency, 3),
             timestamp=datetime.utcnow().isoformat() + "Z",
         )

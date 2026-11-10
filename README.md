@@ -69,6 +69,11 @@ python rag_experiment.py --level 6   # all advanced combined
 - Thinking level: `low` (via OpenRouter `reasoning={"effort": "low"}`)
 - Prompt template: fixed
 - Eval questions: fixed across all levels (load from `--questions-file` JSON or `EVAL_QUESTIONS` constant)
+- Confidence-based toggles (all off by default):
+  - `CONFIDENCE_THRESHOLD`: `None` — abstain from LLM if top chunk score < value
+  - `EXPANSION_THRESHOLD`: `None` — skip query expansion at level 4 if top score >= value
+  - `WEIGHT_CONTEXT_BY_SCORE`: `False` — sort context chunks by score descending
+  - `USE_WEIGHTED_RRF`: `False` — weight RRF fusion by chunk similarity scores
 
 See `rag-exploration.md` for the full constants table and enforcement principle.
 

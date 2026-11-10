@@ -192,6 +192,10 @@ The following are fixed for every level and recorded in every `RunResult.config`
 | `PARENT_CONTEXT_CHARS` | `max(3, TOP_K // 2) * (PARENT_CHUNK_SIZE + overhead)` ≈ 4,968 | Derived context budget for parent-chunk levels |
 | `MAX_CONTEXT_CHARS` | `int(max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS) * 1.10)` ≈ 5,464 | Hard cap on context section passed to LLM (derived, with 10% buffer) |
 | `THINKING_LEVEL` | `"low"` | Reasoning effort passed to LLM on every call |
+| `CONFIDENCE_THRESHOLD` | `None` | If set (e.g., 0.3), abstain from LLM when top chunk score < this value |
+| `EXPANSION_THRESHOLD` | `None` | If set (e.g., 0.5), only expand queries at level 4 when top score < this |
+| `WEIGHT_CONTEXT_BY_SCORE` | `False` | If True, sort context chunks by score descending before building prompt |
+| `USE_WEIGHTED_RRF` | `False` | If True, weight RRF fusion by chunk similarity scores |
 | `PROMPT_TEMPLATE` | See script | Prompt template |
 | `EVAL_QUESTIONS` | See script | Fixed set of questions |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API endpoint |
@@ -229,6 +233,33 @@ The following are fixed for every level and recorded in every `RunResult.config`
 - `OpenAILLM.generate()` sends `reasoning={"effort": thinking_level}` to OpenRouter on every call (OpenRouter maps this to the underlying model's native setting: `reasoning_effort` for OpenAI models, `thinking` for Anthropic, etc.).
 - `StubLLM.generate()` echoes the thinking level in placeholder output.
 - `run_question()` passes `thinking_level=self.thinking_level` to `llm.generate()`.
+
+### Confidence-based feature toggles
+
+Four confidence-based features can be toggled on/off via module-level constants in `rag_experiment.py`. All default to off/None so existing behavior is unchanged unless you explicitly enable them.
+
+**`CONFIDENCE_THRESHOLD`** (default `None`)
+- If set (e.g., `0.3`), the experiment abstains from LLM generation when the top retrieved chunk's score is below this value.
+- Instead of calling the LLM, it returns `"I don't know based on the provided document."`
+- `RunResult.abstained = True` and `RunResult.top_chunk_score` records the score.
+- Useful for avoiding hallucinations when retrieval finds nothing relevant.
+
+**`EXPANSION_THRESHOLD`** (default `None`)
+- If set (e.g., `0.5`), level 4 (query expansion) only expands when the top hybrid score from the original question is below this value.
+- High-confidence retrieval skips expansion entirely, avoiding query drift on specific fact questions.
+- When `None` (default), level 4 always expands.
+
+**`WEIGHT_CONTEXT_BY_SCORE`** (default `False`)
+- If True, context chunks are explicitly sorted by score descending before building the prompt.
+- Higher-scored chunks appear first and survive `fit_context()` truncation better.
+- Score is already shown in each chunk header (`[Chunk i (score s)]`); this flag makes the ordering explicit.
+
+**`USE_WEIGHTED_RRF`** (default `False`)
+- If True, Reciprocal Rank Fusion multiplies each contribution by the chunk's retrieval score: `(1/(k+rank)) * score`.
+- False uses pure RRF (`1/(k+rank)` only).
+- Gives higher-scored chunks more influence in hybrid fusion.
+
+All four constants are recorded in `RunResult.config` for reproducibility.
 
 ### OpenRouter backend
 
