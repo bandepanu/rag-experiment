@@ -207,9 +207,10 @@ EVAL_QUESTIONS: List[str] = [
     "Can you summarize the key points?",
 ]
 
-# Path to a JSON file containing a list of question strings.
+# Path to a JSON file containing a list of question strings OR objects.
 # If set (or passed via --questions-file), questions are loaded from this file
-# instead of EVAL_QUESTIONS. Format: ["Q1", "Q2", "Q3"].
+# instead of EVAL_QUESTIONS.
+# Format: ["Q1", "Q2"] or [{"question": "Q1", "reference_answer": "A1"}, ...]
 QUESTIONS_FILE: Optional[Path] = None
 
 # Directory for experiment output. One JSONL file per level per run.
@@ -757,6 +758,7 @@ class RunResult:
     config: dict
     question: str
     answer: str
+    reference_answer: Optional[str]
     retrieved_chunks: List[dict]
     context_chars: int
     truncated: bool
@@ -783,13 +785,15 @@ class Experiment:
             OpenRouter connection metadata, recorded for reproducibility.
     """
 
-    def __init__(self, level: int, questions: Optional[List[str]] = None):
+    def __init__(self, level: int, questions: Optional[List[str]] = None, reference_answers: Optional[Dict[str, str]] = None):
         self.level = level
 
         # Record all constants as instance attributes so they appear verbatim
         # in every RunResult.config — not just defined at module level.
         # Questions are held constant across all levels for fair A/B comparison.
         self.questions = questions if questions is not None else EVAL_QUESTIONS
+        # Reference answers (optional, from questions.json objects) for later scoring/manual comparison.
+        self.reference_answers = reference_answers if reference_answers is not None else {}
         self.document_path = str(DOCUMENT_PATH)
         self.embedding_model_name = EMBEDDING_MODEL_NAME
         self.llm_backend = LLM_BACKEND
@@ -1026,6 +1030,7 @@ class Experiment:
             config=config,
             question=question,
             answer=answer,
+            reference_answer=self.reference_answers.get(question),
             retrieved_chunks=retrieved_chunks,
             context_chars=context_chars,
             truncated=truncated,
@@ -1120,11 +1125,23 @@ def main():
         QUESTIONS_FILE = args.questions_file
 
     # Load questions from JSON file if provided, otherwise use EVAL_QUESTIONS constant
+    # Supports both flat strings ["Q1", "Q2"] and objects [{"question": "Q1", "reference_answer": "A1"}]
+    reference_answers: Dict[str, str] = {}
     if QUESTIONS_FILE is not None:
         with QUESTIONS_FILE.open("r", encoding="utf-8") as f:
-            questions = json.load(f)
-        if not isinstance(questions, list) or not all(isinstance(q, str) for q in questions):
-            raise ValueError(f"{QUESTIONS_FILE} must contain a JSON list of strings: [\"Q1\", \"Q2\", ...]")
+            raw_questions = json.load(f)
+        if not isinstance(raw_questions, list):
+            raise ValueError(f"{QUESTIONS_FILE} must contain a JSON list")
+        questions = []
+        for item in raw_questions:
+            if isinstance(item, str):
+                questions.append(item)
+            elif isinstance(item, dict) and "question" in item:
+                questions.append(item["question"])
+                if "reference_answer" in item and isinstance(item["reference_answer"], str):
+                    reference_answers[item["question"]] = item["reference_answer"]
+            else:
+                raise ValueError(f"Each item in {QUESTIONS_FILE} must be a string or an object with a 'question' key")
     else:
         questions = EVAL_QUESTIONS
 
@@ -1132,7 +1149,7 @@ def main():
 
     for level in levels:
         print(f"\n=== Level {level}: {LEVEL_DESCRIPTIONS[level]} ===")
-        exp = Experiment(level, questions=questions)
+        exp = Experiment(level, questions=questions, reference_answers=reference_answers)
         results = exp.run_all()
         path = save_results(results, level)
         print(f"Saved {len(results)} results to {path}")

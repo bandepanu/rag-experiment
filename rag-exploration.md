@@ -247,12 +247,13 @@ cd /home/psg/.pi/rag-experiment
 
 # 1. Place your document at document.txt
 # 2. Create questions.json with your evaluation questions (see questions.json.example)
+#    Format: [{"question": "Q1", "reference_answer": "A1"}, ...] or ["Q1", "Q2"]
 #    or edit EVAL_QUESTIONS in the script as fallback
 # 3. Install dependencies
 pip install sentence-transformers rank_bm25 numpy openai
 
-# 4. Set your OpenRouter key
-export OPENROUTER_API_KEY="sk-or-..."  (or put it in .env)
+# 4. Set your OpenRouter key (in .env or export)
+export OPENROUTER_API_KEY="sk-or-..."
 
 # 5. Compare naive RAG vs full-context baseline (identical model, context cap, thinking level)
 python rag_experiment.py --levels 0 5 --questions-file questions.json
@@ -266,7 +267,7 @@ python rag_experiment.py --level 6   # all advanced combined
 
 Without an OpenRouter key, temporarily set `LLM_BACKEND = "stub"` to test the pipeline without API calls.
 
-**Questions:** Questions are held constant across all levels for fair A/B comparison. Load them from a JSON file (`["Q1", "Q2", ...]`) via `--questions-file`, or use the `EVAL_QUESTIONS` constant in the script as fallback.
+**Questions:** Questions are held constant across all levels for fair A/B comparison. Load them from a JSON file via `--questions-file`, or use the `EVAL_QUESTIONS` constant in the script as fallback. Each question can include an optional `reference_answer` field; if provided, it is saved in every `RunResult` (output JSONL) for later scoring/manual comparison.
 
 
 ## Deferred: GraphRAG

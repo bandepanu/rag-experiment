@@ -35,6 +35,7 @@ export OPENROUTER_API_KEY="sk-or-..."
 ```bash
 # 1. Place your document at document.txt
 # 2. Create questions.json with your evaluation questions (see questions.json.example)
+#    Format: [{"question": "Q1", "reference_answer": "A1"}, ...] or ["Q1", "Q2"]
 # 3. Run baseline comparison: naive RAG vs full-context baseline
 python rag_experiment.py --levels 0 5 --questions-file questions.json
 
@@ -73,7 +74,7 @@ See `rag-exploration.md` for the full constants table and enforcement principle.
 
 ## Output
 
-Each run writes to `results/level_<N>_<timestamp>.jsonl` — one JSON line per eval question — containing the answer, retrieved chunk IDs/scores, context character count, truncation flag, latency, and the full config dict.
+Each run writes to `results/level_<N>_<timestamp>.jsonl` — one JSON line per eval question — containing the answer, reference_answer (if provided in questions.json), retrieved chunk IDs/scores, context character count, truncation flag, latency, and the full config dict.
 
 ## License
 
