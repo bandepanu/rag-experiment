@@ -46,6 +46,17 @@ QUESTION_TYPE_KEYWORDS = {
     ],
 }
 
+# Classification-to-level mapping: our hypothesis about which RAG level
+# works best for each question type. This is compared against actual
+# best levels from the experiment results.
+QUESTION_TYPE_TO_LEVEL = {
+    "fact_lookup": 1,           # hybrid: keyword + vector for exact entities
+    "entity_extraction": 2,     # parent-child: parent context around entities
+    "synthesis": 3,             # cross-encoder reranker for multi-chunk reasoning
+    "conceptual": 4,            # query expansion for broad conceptual queries
+    "other": 0,                 # naive RAG fallback
+}
+
 
 def classify_question(question: str) -> str:
     """Classify a question into a type using heuristic keyword matching.
@@ -241,6 +252,7 @@ def analyze_question_group(
     return {
         "question": question,
         "question_type": question_type,
+        "predicted_level": QUESTION_TYPE_TO_LEVEL.get(question_type, 0),
         "reference_answer": reference_answer,
         "level_scores": level_scores,
         "best_level": best_level,
@@ -270,6 +282,9 @@ def analyze_by_question_type(
         expansion_hurt_count = 0
         total_with_expansion = 0
 
+        match_count = 0
+        mismatch_count = 0
+
         for a in analyses:
             level_votes[a["best_level"]] += 1
             for lvl, score in a["level_scores"].items():
@@ -281,6 +296,12 @@ def analyze_by_question_type(
                 expansion_hurt_count += 1
             total_with_expansion += 1
 
+            # Check if predicted level matches actual best level
+            if a["predicted_level"] == a["best_level"]:
+                match_count += 1
+            else:
+                mismatch_count += 1
+
         best_level_by_vote = max(level_votes, key=level_votes.get) if level_votes else -1
 
         # Average score per level across questions of this type
@@ -290,7 +311,11 @@ def analyze_by_question_type(
 
         type_summary[qtype] = {
             "question_count": len(analyses),
+            "predicted_level": QUESTION_TYPE_TO_LEVEL.get(qtype, 0),
             "best_level_by_vote": best_level_by_vote,
+            "match_count": match_count,
+            "mismatch_count": mismatch_count,
+            "match_rate": round(match_count / len(analyses), 2) if analyses else 0.0,
             "level_votes": dict(level_votes),
             "avg_score_per_level": avg_scores,
             "expansion_helped_count": expansion_helped_count,
@@ -408,8 +433,10 @@ def main() -> None:
             {
                 "question": qa["question"],
                 "question_type": qa["question_type"],
+                "predicted_level": qa["predicted_level"],
                 "best_level": qa["best_level"],
                 "best_score": qa["best_score"],
+                "level_match": qa["predicted_level"] == qa["best_level"],
                 "level_scores": qa["level_scores"],
                 "abstention_analysis": qa["abstention_analysis"],
                 "expansion_analysis": qa["expansion_analysis"],
@@ -428,8 +455,14 @@ def main() -> None:
 
     print("\n--- Question Type Summary ---")
     for qtype, stats in type_summary.items():
+        match_str = (
+            f"{stats['match_count']}/{stats['question_count']} "
+            f"({stats['match_rate']*100:.0f}%)"
+        )
         print(f"\n  {qtype} ({stats['question_count']} questions)")
+        print(f"    Predicted level: {stats['predicted_level']}")
         print(f"    Best level by vote: {stats['best_level_by_vote']}")
+        print(f"    Predicted vs actual match: {match_str}")
         print(f"    Level votes: {stats['level_votes']}")
         print(f"    Avg score per level: {stats['avg_score_per_level']}")
         print(f"    Expansion helped: {stats['expansion_helped_count']}, "
@@ -442,9 +475,11 @@ def main() -> None:
 
     print("\n--- Question Details ---")
     for qd in question_analyses:
+        match_mark = "✓" if qd["predicted_level"] == qd["best_level"] else "✗"
         print(f"\n  Q: {qd['question'][:80]}...")
         print(f"    Type: {qd['question_type']}")
-        print(f"    Best level: {qd['best_level']} (score: {qd['best_score']})")
+        print(f"    Predicted level: {qd['predicted_level']} | Actual best: {qd['best_level']} "
+              f"(score: {qd['best_score']}) [{match_mark}]")
         print(f"    Level scores: {qd['level_scores']}")
         ea = qd["expansion_analysis"]
         if ea["expansion_helped"]:
