@@ -235,7 +235,7 @@ The following are fixed for every level and recorded in every `RunResult.config`
 All LLM calls route through OpenRouter (`https://openrouter.ai/api/v1`) using the OpenAI Python client with a custom `base_url`. OpenRouter provides a standardized, provider-agnostic API; `reasoning={"effort": "low"}` is its standard way to set reasoning/thinking level across models.
 
 - `OpenAILLM.__init__` constructs the OpenAI client with `base_url=OPENROUTER_BASE_URL`, `api_key=OPENROUTER_API_KEY` (from env), `default_headers=OPENROUTER_HEADERS`.
-- Prerequisite: `export OPENROUTER_API_KEY="sk-or-..."` before running.
+- Prerequisite: Put `OPENROUTER_API_KEY="sk-or-..."` in `.env` (auto-loaded) or export it.
 - `RunResult.config` records `openrouter_base_url`, `openrouter_api_key_set`, `openrouter_headers`.
 
 ---
@@ -252,7 +252,7 @@ cd /home/psg/.pi/rag-experiment
 pip install sentence-transformers rank_bm25 numpy openai
 
 # 4. Set your OpenRouter key
-export OPENROUTER_API_KEY="sk-or-..."
+export OPENROUTER_API_KEY="sk-or-..."  (or put it in .env)
 
 # 5. Compare naive RAG vs full-context baseline (identical model, context cap, thinking level)
 python rag_experiment.py --levels 0 5 --questions-file questions.json

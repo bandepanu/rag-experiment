@@ -23,6 +23,7 @@ Most "my first RAG" pipelines use naive vector search and underperform compared 
 pip install sentence-transformers rank_bm25 numpy openai
 
 # OpenRouter API key (required for real LLM calls)
+# Put in .env (auto-loaded) or export:
 export OPENROUTER_API_KEY="sk-or-..."
 
 # Or dry-run without an API key:

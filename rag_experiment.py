@@ -26,7 +26,8 @@ Outputs:
   results/level_<N>_<timestamp>.jsonl  (one JSON line per eval question)
 
 Prerequisite:
-  export OPENROUTER_API_KEY="sk-or-..."   (or set LLM_BACKEND="stub" to dry-run)
+  Put OPENROUTER_API_KEY="sk-or-..." in .env (auto-loaded) or export it.
+  (or set LLM_BACKEND="stub" to dry-run)
 """
 
 from __future__ import annotations
@@ -45,6 +46,39 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Iterable
 
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# .env loader (no external dependency)
+# ---------------------------------------------------------------------------
+
+def _load_env() -> None:
+    """Load KEY=VALUE pairs from a .env file in the current working directory.
+
+    Existing environment variables take precedence over .env values.
+    No external dependency (e.g., python-dotenv) is required.
+    """
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    try:
+        with env_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
+_load_env()
 
 # ---------------------------------------------------------------------------
 # CONSTANTS — edit these to fix the experimental conditions
