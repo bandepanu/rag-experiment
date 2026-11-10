@@ -11,7 +11,7 @@ Most "my first RAG" pipelines use naive vector search and underperform compared 
 | File | Purpose |
 |------|---------|
 | `rag_experiment.py` | The experiment script (7 levels, 0–6) |
-| `analyze_results.py` | Analysis script: reads results JSONL, classifies questions, finds best level per type |
+| `analyze_results.py` | Analysis script: reads results JSONL, classifies questions by type, finds best level per type, compares predicted vs actual level |
 | `rag-exploration.md` | Main experiment log: findings, design, constants, architecture diagrams, pseudo code |
 | `rag-retrieval-styles.md` | Candidate retrieval styles for future consideration (sparse-only, ColBERT, multi-vector, GraphRAG, etc.) |
 | `results/` | Generated at runtime — one JSONL per level per run (gitignored) |

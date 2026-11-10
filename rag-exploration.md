@@ -665,16 +665,36 @@ The script prints:
 
 With `--output`, writes a full JSON report with all details.
 
-### Classification heuristic
+### Classification heuristic + predicted vs actual level
 
 Questions are classified by keyword matching (no LLM required):
 - `synthesis`: "why", "how does", "how can", "what caused", "compare"
 - `entity_extraction`: "error code", "which", "who", "when", "how many", "name", "code"
-- `conceptual`: "what is the", "what are the", "explain", "describe", "overview"
+- `conceptual`: "what is the", "what are the", "explain", "describe", "overview", "summary", "key points", "main idea"
 - `fact_lookup`: short "what is" / "what are" questions
 - `other`: everything else
 
-This classification is a starting point — you can tune the keywords or replace with an LLM-based classifier later.
+Each question type has a **predicted level** — our hypothesis about which RAG level works best:
+
+| Question Type | Predicted Level | Rationale |
+|---------------|----------------|-----------|
+| `fact_lookup` | 1 | Hybrid: keyword + vector for exact term matching |
+| `entity_extraction` | 2 | Parent-child: parent context around entity matches |
+| `synthesis` | 3 | Cross-encoder reranker for multi-chunk reasoning |
+| `conceptual` | 4 | Query expansion for broad conceptual questions |
+| `other` | 0 | Naive RAG fallback |
+
+The analysis script compares **predicted level** vs **actual best level** (from scores) for every question, showing match/mismatch per question and per question type:
+
+```
+Q: What specific name does the author give to...?
+    Type: entity_extraction
+    Predicted level: 2 | Actual best: 4 (score: 0.458) [✗]
+```
+
+This tells you where your classification-to-level mapping was correct and where it needs adjustment — e.g., if `entity_extraction` consistently maps to level 4 instead of level 2, you'd update `QUESTION_TYPE_TO_LEVEL` in the script.
+
+This classification is a starting point — you can tune the keywords, the level mapping, or replace with an LLM-based classifier later.
 
 ### Incremental Updates
 
