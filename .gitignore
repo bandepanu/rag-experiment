@@ -47,4 +47,7 @@ Thumbs.db
 *~
 
 # Jupyter
-.ipynb_checkpoints/.venv/
+.ipynb_checkpoints/
+
+# Local runner script (not committed)
+run_experiment.sh.venv/
