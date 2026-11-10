@@ -171,6 +171,8 @@ assert TOP_K > 0, "TOP_K must be positive"
 # Fixed reasoning effort passed to the LLM on every generate() call.
 # OpenRouter maps this to the model's native setting (reasoning_effort for
 # OpenAI models, thinking for Anthropic, etc.).
+# Some models (e.g., o1, o3) accept it; others (e.g., gpt-4o-mini) reject it.
+# The generate() method tries with reasoning and falls back without it if rejected.
 THINKING_LEVEL = "low"
 
 # OpenRouter API endpoint. OpenAI-compatible base URL for the OpenAI Python client.
@@ -281,11 +283,19 @@ class OpenAILLM(LLM):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
         }
-        # OpenRouter's provider-agnostic "reasoning" parameter. Enforced on every
-        # call so thinking level is constant across all experiment levels.
+        # OpenRouter's provider-agnostic "reasoning" parameter. Some models
+        # (e.g., o1, o3) accept it; others (e.g., gpt-4o-mini) reject it.
+        # Try with reasoning first, fall back without it if rejected.
         if thinking_level:
             kwargs["reasoning"] = {"effort": thinking_level}
-        resp = self.client.chat.completions.create(**kwargs)
+        try:
+            resp = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            if "reasoning" in str(e).lower() and thinking_level:
+                kwargs.pop("reasoning", None)
+                resp = self.client.chat.completions.create(**kwargs)
+            else:
+                raise
         return resp.choices[0].message.content or ""
 
 
