@@ -47,4 +47,4 @@ Thumbs.db
 *~
 
 # Jupyter
-.ipynb_checkpoints/
+.ipynb_checkpoints/.venv/
