@@ -192,8 +192,8 @@ The following are fixed for every level and recorded in every `RunResult.config`
 | `PARENT_CONTEXT_CHARS` | `max(3, TOP_K // 2) * (PARENT_CHUNK_SIZE + overhead)` ≈ 4,968 | Derived context budget for parent-chunk levels |
 | `MAX_CONTEXT_CHARS` | `int(max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS) * 1.10)` ≈ 5,464 | Hard cap on context section passed to LLM (derived, with 10% buffer) |
 | `THINKING_LEVEL` | `"low"` | Reasoning effort passed to LLM on every call |
-| `CONFIDENCE_THRESHOLD` | `None` | If set (e.g., 0.3), abstain from LLM when top chunk score < this value |
-| `EXPANSION_THRESHOLD` | `None` | If set (e.g., 0.5), only expand queries at level 4 when top score < this |
+| `CONFIDENCE_THRESHOLD` | `None` | If set (e.g., 0.6), abstain from LLM when top chunk score < this value |
+| `EXPANSION_THRESHOLD` | `None` | If set (e.g., 0.3), only expand queries at level 4 when top score < this |
 | `WEIGHT_CONTEXT_BY_SCORE` | `False` | If True, sort context chunks by score descending before building prompt |
 | `USE_WEIGHTED_RRF` | `False` | If True, weight RRF fusion by chunk similarity scores |
 | `PROMPT_TEMPLATE` | See script | Prompt template |
@@ -239,13 +239,13 @@ The following are fixed for every level and recorded in every `RunResult.config`
 Four confidence-based features can be toggled on/off via module-level constants in `rag_experiment.py`. All default to off/None so existing behavior is unchanged unless you explicitly enable them.
 
 **`CONFIDENCE_THRESHOLD`** (default `None`)
-- If set (e.g., `0.3`), the experiment abstains from LLM generation when the top retrieved chunk's score is below this value.
+- If set (e.g., `0.6`), the experiment abstains from LLM generation when the top retrieved chunk's score is below this value.
 - Instead of calling the LLM, it returns `"I don't know based on the provided document."`
 - `RunResult.abstained = True` and `RunResult.top_chunk_score` records the score.
 - Useful for avoiding hallucinations when retrieval finds nothing relevant.
 
 **`EXPANSION_THRESHOLD`** (default `None`)
-- If set (e.g., `0.5`), level 4 (query expansion) only expands when the top hybrid score from the original question is below this value.
+- If set (e.g., `0.3`), level 4 (query expansion) only expands when the top hybrid score from the original question is below this value.
 - High-confidence retrieval skips expansion entirely, avoiding query drift on specific fact questions.
 - When `None` (default), level 4 always expands.
 

@@ -170,12 +170,12 @@ assert TOP_K > 0, "TOP_K must be positive"
 
 # If set (not None), abstain from LLM generation when top chunk score < this value.
 # Return "I don't know based on the provided document." instead.
-# Reasonable starting values: 0.25-0.40 for cosine similarity; None disables.
+# Reasonable starting values: 0.5-0.7 for cosine similarity; None disables.
 CONFIDENCE_THRESHOLD = None
 
 # If set (not None), only apply query expansion at level 4 when top hybrid score < this value.
 # High-confidence retrieval skips expansion to avoid query drift.
-# Reasonable starting values: 0.40-0.70; None disables (always expand).
+# Reasonable starting values: 0.2-0.4; None disables (always expand).
 EXPANSION_THRESHOLD = None
 
 # If True, sort context chunks by score descending and include score prominently
