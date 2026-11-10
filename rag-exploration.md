@@ -620,7 +620,63 @@ FUNCTION fit_context(context, max_chars=MAX_CONTEXT_CHARS):
 
 ---
 
-## Incremental Updates
+## Analysis Script: `analyze_results.py`
+
+A separate script (`analyze_results.py`) reads all `results/level_*.jsonl` files and performs post-hoc analysis to determine which RAG level works best for which question type.
+
+### What it does
+
+1. **Loads all results** from `results/level_<N>_<timestamp>.jsonl` files
+2. **Classifies each question** by type using heuristic keyword matching:
+   - `fact_lookup` — "What is ERR-003?", "Which proposition...?"
+   - `entity_extraction` — "Who is Isaac Newton?", "What percentage...?"
+   - `synthesis` — "Why did...?", "How does X cause Y?"
+   - `conceptual` — "What is the author's view on...?"
+   - `other` — unclassified
+3. **Scores each answer** against `reference_answer` using token overlap + entity matching (0.0–1.0)
+4. **Groups by question_type** and determines best level per type (majority vote)
+5. **Recommends confidence thresholds** based on observed data:
+   - `CONFIDENCE_THRESHOLD` = max(top_chunk_score of wrong non-abstained answers) + 0.05
+   - `EXPANSION_THRESHOLD` = min(top_chunk_score where expansion hurt) - 0.05
+
+### Usage
+
+```bash
+cd /home/psg/.pi/rag-experiment
+source .venv/bin/activate
+export LD_LIBRARY_PATH=/nix/store/...gcc-*/lib:/nix/store/...zlib-*/lib:$LD_LIBRARY_PATH
+
+# Run all levels first
+python rag_experiment.py --levels 0 1 2 3 4 5 6 --questions-file questions.json
+
+# Then analyze
+python analyze_results.py results/
+# Or save to file:
+python analyze_results.py results/ --output analysis_report.json
+```
+
+### Output
+
+The script prints:
+- Total questions and levels run
+- Per question_type: best level by vote, level votes, avg score per level, expansion helped/hurt counts
+- Recommended `CONFIDENCE_THRESHOLD` and `EXPANSION_THRESHOLD` values
+- Per-question details: question, type, best level, best score, all level scores
+
+With `--output`, writes a full JSON report with all details.
+
+### Classification heuristic
+
+Questions are classified by keyword matching (no LLM required):
+- `synthesis`: "why", "how does", "how can", "what caused", "compare"
+- `entity_extraction`: "error code", "which", "who", "when", "how many", "name", "code"
+- `conceptual`: "what is the", "what are the", "explain", "describe", "overview"
+- `fact_lookup`: short "what is" / "what are" questions
+- `other`: everything else
+
+This classification is a starting point — you can tune the keywords or replace with an LLM-based classifier later.
+
+### Incremental Updates
 
 *(Future entries go here. The design decisions above were previously logged as separate dated entries; they are now incorporated into the main text so the document reads as a coherent whole.)*
 
