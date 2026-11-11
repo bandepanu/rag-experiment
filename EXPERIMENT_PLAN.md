@@ -53,11 +53,62 @@ Fresh ticket
 - Generates resolution guidance answer
 - Can escalate if confidence is low
 
-This split follows the AWS/Strands Agents pattern ("Amazon saves millions by replacing Sonnet 4.6 with Strands Decider"):
+This split follows the AWS/Strands Agents pattern ("Amazon saves millions by replacing Sonnet 4.6 with Strands Decider", Nov 2026):
 
-- **BEDROCK**: LLM + RAG handles every ticket (baseline, expensive)
-- **DUAL**: Both classifier and RAG/LLM run in parallel; compare results (A/B)
-- **DECIDER**: Classifier handles it alone with canned response or route (cheap, fast)
+## Strands Decider Reference — Article Findings
+
+**Source:** https://strandsagents.com/blog/amazon-saves-millions-replacing-sonnet-with-strands-decider/
+
+**What AWS did:**
+- Two Amazon engineers replaced Claude Sonnet 4.6 with Strands Decider for labeling tickets in one of the world's largest internal ticketing systems
+- Tickets were customer escalations, capacity requests, automated alarms, security findings — fitting within **20 category types**
+- Original setup: long system prompt on every ticket, generating JSON and reasoning against a fixed set of labels
+- Sonnet 4.6 was the "goldilocks" choice balancing intelligence with cost at enormous scale
+
+**Replacement model:**
+- Started with Strands Decider 2B, switched to E4B Gemma 4 build (better results on test set)
+- Tuned confidence threshold before applying a label
+- Ran on SageMaker `ml.g5.xlarge` instances (one A10G, 24 GB each)
+- Model used ~19 GiB RAM
+- One request took ~640 ms
+- Endpoint autoscales with traffic; network isolated (no outbound access from container)
+- Model weights copied from S3 at startup
+
+**Three-way switch (BEDROCK / DUAL / DECIDER):**
+- **BEDROCK**: Sonnet labels every ticket, Strands Decider not called
+- **DUAL**: Both models called in parallel; Sonnet results applied to ticket and compared with Decider results
+- **DECIDER**: Strands Decider labels every ticket, Bedrock not called
+
+**Measured results (Sonnet 4.6 vs Strands Decider E4B):**
+
+| Metric | Claude Sonnet 4.6 | Strands Decider E4B | Change |
+|--------|-------------------|---------------------|--------|
+| Avg time per call | 4,215 ms | 897 ms | -78% |
+| Input tokens per ticket | 6,554 | 2,009 | -69% |
+| Output tokens per ticket | 170 | 1 | -99% |
+| Total tokens per ticket | 6,724 | 2,010 | -70% |
+| Cost per ticket | $0.0222 | ~$0.0005 | -98% |
+| Cost per million tickets | ~$22,200 | ~$500 | -98% |
+
+**Implementation notes:**
+- Token drop came from: (1) Decider produced one output (the choice) instead of a JSON answer, (2) much shorter prompt than Sonnet 4.6's
+- Production label descriptions were longer than Strands Decider's 4,096-token window → rewrote each of 20 labels as one- or two-sentence criteria, sent as options of a single choice question, plus a "none" option
+- Ticket data same as Sonnet gets, except on long tickets Decider drops oldest comments to fit
+- Lambda duration dropped 74% on the day Sonnet usage was turned off
+
+**Critical implementation detail:**
+- JSON key order changed the answer — sending same content with keys in different order moved output probabilities by up to **0.19**
+- Fix: send every request with sorted keys
+
+**Lessons / applicability conditions (from article):**
+- Decision model worked because: task is a **closed choice from a known catalog**, **volume is high**, **latency of old path mattered**
+- A decision model probably **cannot** replace the LLM's job if:
+  - Labels need explanation text
+  - Catalog changes weekly
+  - Useful context can't fit into a few thousand tokens
+
+**Key takeaway for our experiment:**
+The classifier pre-stage is ideal for **ticket triage/routing** (closed choice from known category catalog). It is **not** suitable for **resolution guidance** (free-form answers requiring explanation text and KB retrieval). That's why our architecture splits: classifier for triage → RAG + LLM for resolution guidance only when `needs_rag=true`.
 
 **Classifier outputs:**
 - `app_id` — which of hundreds of apps
@@ -73,6 +124,42 @@ This split follows the AWS/Strands Agents pattern ("Amazon saves millions by rep
 2. Large LLM vs small LLM vs encoder-only — which classifier works best for ticket triage?
 3. Does fine-tuning a small encoder beat zero-shot LLM classification for infra-specific categories?
 4. Which RAG level (a–h) works best per triage category?
+
+### Classifier model approaches (E1 experiment)
+
+For the classifier pre-stage (ticket triage), we compare four model approaches:
+
+| Approach | Example models | Fine-tuning? | Inference mode | Cost per ticket | Latency | Best for |
+|----------|---------------|--------------|----------------|-----------------|---------|----------|
+| **Large LLM** | `openai/gpt-4o-mini` (OpenRouter) | ❌ No (zero-shot prompt) | Generative text output | ~$0.000003 | ~1–2 s | Prototyping, complex categorization |
+| **Small LLM** | `deepseek/deepseek-v4.1-flash-1017`, `liquid/lfm-3-1.7b` | ❌ No (zero-shot prompt) | Generative text output | ~$0.000000 | ~500 ms | Low-cost prototyping |
+| **Encoder-only (zero-shot)** | `facebook/bart-large-mnli`, DistilBERT, RoBERTa | ❌ No (zero-shot NLI) | Classification probabilities | ~$0 (local) | ~100 ms | Fast local inference, no API |
+| **Fine-tuned encoder** | DistilBERT / RoBERTa fine-tuned on synthetic triage data | ✅ Yes (synthetic labels from document.txt) | Classification probabilities | ~$0 (local) | ~10 ms | Production-scale, millions of tickets |
+| **Strands Decider base** | `StrandsAgents/strands-decider-2B-qwen3.5`, `amazon/strands-decider-E4B-gemma4` | ⚠️ Base model (pre-trained decision model) | Choice probabilities over options | Local / SageMaker | ~640 ms | Decision-model pattern, closed-choice catalog |
+
+**Key differences:**
+
+1. **Large LLM (zero-shot)** — Best flexibility, no fine-tuning needed, but highest cost and latency. Good for validating the triage taxonomy before committing to fine-tuning.
+
+2. **Small LLM (zero-shot)** — Much cheaper and faster than large LLM, but still generative text output (requires parsing the category from text). Good for medium-volume experimentation.
+
+3. **Encoder-only (zero-shot NLI)** — Frames triage as natural language inference: "ticket text implies category X". No generative output, just probabilities. Fast and local, but accuracy depends on how well the NLI task maps to your category taxonomy.
+
+4. **Fine-tuned encoder** — Requires labeled training data (synthetic triage tickets from document.txt). Fastest and cheapest at production scale. Best accuracy for your specific categories, but requires the upfront fine-tuning effort.
+
+5. **Strands Decider base** — Pre-trained decision model that returns probabilities over options. Follows the AWS pattern exactly. Good if your triage maps to a closed-choice catalog. Base model may need fine-tuning on your specific categories.
+
+**Recommendation for E1:**
+- Start with zero-shot LLM (large or small) to validate the triage taxonomy
+- Generate synthetic triage data from document.txt
+- Fine-tune an encoder on that synthetic data
+- Compare all four on the same test set: accuracy, latency, cost
+
+**From the Strands Decider article — critical implementation notes:**
+- JSON key order changed the answer: sending same content with keys in different order moved output probabilities by up to **0.19**
+- Fix: send every request with sorted keys
+- Decision model works best when: task is a closed choice from a known catalog, volume is high, latency of old path mattered
+- Cannot replace LLM if labels need explanation text, catalog changes weekly, or context doesn't fit in a few thousand tokens
 
 ### RAG resolution stage (existing experiment)
 
