@@ -1,0 +1,18 @@
+[
+  {
+    "question": "What is this document about?",
+    "reference_answer": "It describes operational procedures for the NovaCluster distributed computing platform, covering node provisioning, cluster restart, error handling, and security configuration."
+  },
+  {
+    "question": "Can you summarize the key points?",
+    "reference_answer": "Key points include cluster restart steps, error codes ERR-001 to ERR-004, node provisioning with novactl, security group configuration, and troubleshooting for CrashLoopBackOff and certificate renewal."
+  },
+  {
+    "question": "What are the key error codes mentioned?",
+    "reference_answer": "ERR-001 (control plane timeout), ERR-002 (node drain blocked), ERR-003 (health check failure), ERR-004 (certificate expired)."
+  },
+  {
+    "question": "What command drains worker nodes before a restart?",
+    "reference_answer": "kubectl drain --ignore-daemonsets"
+  }
+]

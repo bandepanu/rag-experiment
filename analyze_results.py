@@ -50,11 +50,11 @@ QUESTION_TYPE_KEYWORDS = {
 # works best for each question type. This is compared against actual
 # best levels from the experiment results.
 QUESTION_TYPE_TO_LEVEL = {
-    "fact_lookup": 1,           # hybrid: keyword + vector for exact entities
-    "entity_extraction": 2,     # parent-child: parent context around entities
-    "synthesis": 3,             # cross-encoder reranker for multi-chunk reasoning
-    "conceptual": 4,            # query expansion for broad conceptual queries
-    "other": 0,                 # naive RAG fallback
+    "fact_lookup": "b",           # hybrid: keyword + vector for exact entities
+    "entity_extraction": "c",     # parent-child: parent context around entities
+    "synthesis": "d",             # cross-encoder reranker for multi-chunk reasoning
+    "conceptual": "e",            # query expansion for broad conceptual queries
+    "other": "a",                 # naive RAG fallback
 }
 
 
@@ -186,13 +186,13 @@ def analyze_question_group(
     reference_answer = results[0].get("reference_answer") if results else None
 
     # Score each level's answer
-    level_scores: Dict[int, float] = {}
-    level_answers: Dict[int, str] = {}
-    level_abstained: Dict[int, bool] = {}
-    level_scores_raw: Dict[int, Optional[float]] = {}
+    level_scores: Dict[str, float] = {}
+    level_answers: Dict[str, str] = {}
+    level_abstained: Dict[str, bool] = {}
+    level_scores_raw: Dict[str, Optional[float]] = {}
 
     for r in results:
-        level = r.get("level", -1)
+        level = r.get("level", "")
         answer = r.get("answer", "")
         score = score_answer(answer, reference_answer)
         level_scores[level] = score
@@ -205,7 +205,7 @@ def analyze_question_group(
         best_level = max(level_scores, key=level_scores.get)
         best_score = level_scores[best_level]
     else:
-        best_level = -1
+        best_level = ""
         best_score = 0.0
 
     # Confidence analysis: at what threshold would abstention have helped?
@@ -252,7 +252,7 @@ def analyze_question_group(
     return {
         "question": question,
         "question_type": question_type,
-        "predicted_level": QUESTION_TYPE_TO_LEVEL.get(question_type, 0),
+        "predicted_level": QUESTION_TYPE_TO_LEVEL.get(question_type, "a"),
         "reference_answer": reference_answer,
         "level_scores": level_scores,
         "best_level": best_level,
@@ -276,8 +276,8 @@ def analyze_by_question_type(
     type_summary: Dict[str, Any] = {}
     for qtype, analyses in by_type.items():
         # Count best levels
-        level_votes: Dict[int, int] = defaultdict(int)
-        total_scores: Dict[int, List[float]] = defaultdict(list)
+        level_votes: Dict[str, int] = defaultdict(int)
+        total_scores: Dict[str, List[float]] = defaultdict(list)
         expansion_helped_count = 0
         expansion_hurt_count = 0
         total_with_expansion = 0
@@ -302,16 +302,16 @@ def analyze_by_question_type(
             else:
                 mismatch_count += 1
 
-        best_level_by_vote = max(level_votes, key=level_votes.get) if level_votes else -1
+        best_level_by_vote = max(level_votes, key=level_votes.get) if level_votes else ""
 
         # Average score per level across questions of this type
-        avg_scores: Dict[int, float] = {}
+        avg_scores: Dict[str, float] = {}
         for lvl, scores in total_scores.items():
             avg_scores[lvl] = round(sum(scores) / len(scores), 3) if scores else 0.0
 
         type_summary[qtype] = {
             "question_count": len(analyses),
-            "predicted_level": QUESTION_TYPE_TO_LEVEL.get(qtype, 0),
+            "predicted_level": QUESTION_TYPE_TO_LEVEL.get(qtype, "a"),
             "best_level_by_vote": best_level_by_vote,
             "match_count": match_count,
             "mismatch_count": mismatch_count,
@@ -365,7 +365,7 @@ def recommend_expansion_threshold(
             # We look at the question's level 3 score context
             # Use the question's own top_chunk_score from non-expansion level
             for r in qa.get("_raw_results", []):
-                if r.get("level") == 1 and r.get("top_chunk_score") is not None:
+                if r.get("level") == "b" and r.get("top_chunk_score") is not None:
                     hurt_scores.append(r["top_chunk_score"])
 
     if not hurt_scores:

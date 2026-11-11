@@ -6,35 +6,39 @@
 
 ---
 
-## Covered in current experiment (levels 0–6)
+## Covered in current experiment (levels a–h)
 
 | Level | Style | What it isolates |
 |-------|-------|------------------|
-| 0 | Dense (vector) RAG | Baseline: cosine similarity on child chunks |
-| 1 | Sparse + Dense hybrid (BM25 + vector, RRF fused) | Does keyword search add value to dense? |
-| 2 | Parent-child retrieval | Does returning larger parent context improve answers over raw child chunks? |
-| 3 | Cross-encoder reranking | Does re-ranking top candidates improve answer quality? |
-| 4 | Query expansion (multi-query via LLM) | Does rewriting the question into variants improve retrieval? |
-| 5 | Full-context baseline (constrained to MAX_CONTEXT_CHARS) | Does retrieval help at all vs just pasting the whole doc? |
-| 6 | All advanced combined | Combined effect of hybrid + parent-child + rerank + query expansion |
+| a | Dense (vector) RAG | Baseline: cosine similarity on child chunks |
+| b | Sparse + Dense hybrid (BM25 + vector, RRF fused) | Does keyword search add value to dense? |
+| c | Parent-child retrieval | Does returning larger parent context improve answers over raw child chunks? |
+| d | Cross-encoder reranking | Does re-ranking top candidates improve answer quality? |
+| e | Query expansion (multi-query via LLM) | Does rewriting the question into variants improve retrieval? |
+| f | Full-context baseline (constrained to MAX_CONTEXT_CHARS) | Does retrieval help at all vs just pasting the whole doc? |
+| g | All advanced combined | Combined effect of hybrid + parent-child + rerank + query expansion |
+| h | Sparse-only RAG (BM25) | Does keyword search alone beat vector search alone? |
 
 Constants enforced across all levels: model, document, embedding, chunking, prompt, eval questions, context cap (MAX_CONTEXT_CHARS, ~5,464 chars with 10% buffer), thinking level ("low"), OpenRouter backend.
 
 ---
 
-## Deferred: GraphRAG
+## GraphRAG (implemented as separate script)
 
-**Status:** Explicitly deferred to a separate experiment, not a level in this script.
+**Status:** Implemented as `rag_experiment_graphrag.py` — a separate experiment, not a level in `rag_experiment.py`.
 
 **What it is:** Index-time LLM extracts entities and relationships from the document, builds a knowledge graph, detects communities, generates community summaries. Query time retrieves relevant subgraphs/communities as structured context.
 
-**Why deferred:**
+**Why separate from this script:**
 - Replaces the whole retrieval paradigm (chunk → graph), not a single feature.
 - Requires index-time LLM entity extraction, which breaks the "document processing is constant" principle.
 - Needs new dependencies (graph construction, community detection, graph traversal).
 - High impact expected for multi-document cross-reasoning; modest for single document.
 
-**Future path:** Build as a separate script if dense/sparse hybrid plateaus or corpus expands beyond one document.
+**Relationship to this script:**
+Both `rag_experiment.py` (levels a–h) and `rag_experiment_graphrag.py` read the same `document.txt` and `questions.json`, so results can be compared side-by-side. GraphRAG output goes to `results/graphrag_<ts>.jsonl`, separate from `level_*.jsonl` files.
+
+See `rag-exploration.md` for the full GraphRAG architecture diagram and constant analysis.
 
 ---
 
@@ -44,11 +48,11 @@ Constants enforced across all levels: model, document, embedding, chunking, prom
 
 **What it is:** Pure keyword retrieval using BM25/TF-IDF, no embeddings.
 
-**Why not covered:** Current script only tests dense-only (level 0) and hybrid (level 1). There is no standalone sparse-only level.
+**Now covered at level h:** Sparse-only RAG (BM25 keyword search only).
 
 **Complexity to add:** Trivial — call `BM25Index.search()` directly without vector fusion.
 
-**Variable isolated:** Does keyword search alone beat vector search alone? (Useful complement to level 1 which tests "does adding keyword to vector help?")
+**Variable isolated:** Does keyword search alone beat vector search alone? (Useful complement to level b which tests "does adding keyword to vector help?")
 
 **Fit with constants:** Clean. Same chunking, same TOP_K, same context cap. Only the retrieval method changes.
 
@@ -186,8 +190,8 @@ Constants enforced across all levels: model, document, embedding, chunking, prom
 
 ## Suggested next steps (your choice)
 
-1. **Add sparse-only** as a level between 0 and 1 if you want dense-vs-sparse isolation before hybrid.
-2. **Run the current 0–6 progression** first to see if any level plateaus.
+1. **Sparse-only is already level h** — run it for a dense-vs-sparse head-to-head against level a (dense-only) or level b (hybrid).
+2. **Run the current a–g progression** first to see if any level plateaus.
 3. **If a level plateaus**, revisit this file to pick the next style (multi-vector, context compression, etc.).
 4. **GraphRAG and multi-hop** should remain separate projects, not levels in this script.
 

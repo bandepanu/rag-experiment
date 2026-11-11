@@ -77,13 +77,14 @@ To isolate which RAG features actually matter, we run a controlled experiment on
 
 | Level | Configuration |
 |-------|---------------|
-| 0 | Naive RAG: vector search on child chunks, return child chunks |
-| 1 | + Hybrid: vector + BM25 keyword search (RRF fused), return child chunks |
-| 2 | + Parent-child: vector search on child chunks, return **parent chunks** as context |
-| 3 | + Cross-encoder reranking over top candidates, return child chunks |
-| 4 | + Query expansion (multi-query via LLM), return child chunks |
-| 5 | Full-context baseline: no retrieval, whole document in prompt (constrained to same window) |
-| 6 | All advanced: hybrid + parent-child + rerank + query expansion |
+| a | Naive RAG: vector search on child chunks, return child chunks |
+| b | + Hybrid: vector + BM25 keyword search (RRF fused), return child chunks |
+| c | + Parent-child: vector search on child chunks, return **parent chunks** as context |
+| d | + Cross-encoder reranking over top candidates, return child chunks |
+| e | + Query expansion (multi-query via LLM), return child chunks |
+| f | Full-context baseline: no retrieval, whole document in prompt (constrained to same window) |
+| g | All advanced: hybrid + parent-child + rerank + query expansion |
+| h | Sparse-only RAG: BM25 keyword search only, return child chunks |
 
 ## Key Terms & Glossary
 
@@ -97,7 +98,7 @@ A model that encodes the **query** and each **document chunk independently** int
 
 ### Cross-encoder (Reranker)
 A model that takes the **query and a candidate chunk together as a single input pair** and outputs a single relevance score. Because both texts are processed jointly (self-attention across both), it is more accurate than a bi-encoder but much slower — it cannot pre-compute scores, so it is applied only to a small candidate pool.  
-**In this script:** `Reranker`, applied at levels 3 and 6 over the top 50 hybrid candidates.
+**In this script:** `Reranker`, applied at levels d and g over the top 50 hybrid candidates.
 
 ### Dense retrieval (vector search)
 Search by converting text into high-dimensional vectors and finding chunks whose vectors are closest to the query vector. Good for semantic meaning (e.g., "how do I restart the cluster?" matches "cluster reboot procedure" despite different words). Weak at exact terms (error codes, product names, acronyms).
@@ -113,13 +114,13 @@ A formula for fusing ranked lists without needing to compare raw scores (which a
 
 ### Parent-child retrieval
 The document is chunked twice: small **children** (512 chars) for retrieval, larger **parents** (1,536 chars) for context. At search time, the best children are found, then the **parent chunks containing those children** are returned to the LLM. A child may contain a keyword match but lack surrounding context; the parent gives the model the full section around the match.  
-**In this script:** Levels 2 and 6. Child-to-parent mapping is built via character-offset containment (`build_child_to_parent_map`).
+**In this script:** Levels c and g. Child-to-parent mapping is built via character-offset containment (`build_child_to_parent_map`).
 
 ### Query expansion / multi-query
 The LLM rewrites the user's original question into 2–3 alternative phrasings. Each variant is searched separately, and results are fused. Helps when the user's wording differs from the document's wording.  
-**In this script:** Level 4.
+**In this script:** Level e.
 
-### Full-context baseline (level 5)
+### Full-context baseline (level f)
 No retrieval at all. The entire document (capped at `MAX_CONTEXT_CHARS`) is stuffed into the prompt as context. This answers: "Would the model do just as well reading everything without any retrieval?"
 
 ### Context window cap (`MAX_CONTEXT_CHARS`)
@@ -140,7 +141,7 @@ With `TOP_K=5`, `CHUNK_SIZE=512`, `PARENT_CHUNK_SIZE=1536`, `overhead=120`:
 
 This is enough for 5 child chunks or up to 3 whole parent chunks plus formatting overhead. The cap is identical across all levels so context capacity never confounds the comparison.
 
-At parent-child levels (2 and 6), whole parents are selected greedily by score until the next parent would exceed the cap. Parents are never truncated mid-text — if only one to three parents fit, only those are returned.
+At parent-child levels (c and g), whole parents are selected greedily by score until the next parent would exceed the cap. Parents are never truncated mid-text — if only one to three parents fit, only those are returned.
 
 ### Thinking level / reasoning effort (`THINKING_LEVEL`)
 A fixed parameter sent to the LLM (via OpenRouter's `reasoning={"effort": "low"}`) controlling how much reasoning the model performs before answering. Held constant across all levels so model reasoning quality does not confound the retrieval comparison.
@@ -193,7 +194,7 @@ The following are fixed for every level and recorded in every `RunResult.config`
 | `MAX_CONTEXT_CHARS` | `int(max(CHILD_CONTEXT_CHARS, PARENT_CONTEXT_CHARS) * 1.10)` ≈ 5,464 | Hard cap on context section passed to LLM (derived, with 10% buffer) |
 | `THINKING_LEVEL` | `"low"` | Reasoning effort passed to LLM on every call |
 | `CONFIDENCE_THRESHOLD` | `None` | If set (e.g., 0.6), abstain from LLM when top chunk score < this value |
-| `EXPANSION_THRESHOLD` | `None` | If set (e.g., 0.3), only expand queries at level 4 when top score < this |
+| `EXPANSION_THRESHOLD` | `None` | If set (e.g., 0.3), only expand queries at level e when top score < this |
 | `WEIGHT_CONTEXT_BY_SCORE` | `False` | If True, sort context chunks by score descending before building prompt |
 | `USE_WEIGHTED_RRF` | `False` | If True, weight RRF fusion by chunk similarity scores |
 | `PROMPT_TEMPLATE` | See script | Prompt template |
@@ -201,7 +202,7 @@ The following are fixed for every level and recorded in every `RunResult.config`
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API endpoint |
 | `OPENROUTER_HEADERS` | `HTTP-Referer`, `X-Title` | OpenRouter attribution headers |
 
-### Parent-child retrieval (level 2 and level 6)
+### Parent-child retrieval (level c and level g)
 
 **What it is:** Instead of returning the raw child chunks that match the query, parent-child retrieval returns the larger parent chunk that contains each matching child. The child chunks (512 chars) are the retrieval unit; the parent chunks (1536 chars) are the context unit.
 
@@ -210,18 +211,18 @@ The following are fixed for every level and recorded in every `RunResult.config`
 **How it works in this script:**
 1. The document is chunked twice: into children (512 chars, with overlap) and parents (1536 chars, with overlap).
 2. Each child is mapped to the parent(s) that contain it.
-3. Vector search runs on children (same retrieval unit as level 0).
+3. Vector search runs on children (same retrieval unit as level a).
 4. The top-K children are mapped to their parent chunks. Parents are deduplicated (keeping the best child score per parent).
 5. Whole parents are selected greedily by descending score until the next parent would exceed `MAX_CONTEXT_CHARS`. Parents are never truncated mid-text.
 
-**Progressive position:** Placed at level 2 (after hybrid, before reranking) because it isolates "does structural context enrichment improve answers?" independently of ranking quality or query rewriting. Level 6 combines it with hybrid, reranking, and query expansion.
+**Progressive position:** Placed at level c (after hybrid, before reranking) because it isolates "does structural context enrichment improve answers?" independently of ranking quality or query rewriting. Level g combines it with hybrid, reranking, and query expansion.
 
 ### Context window constraint
 
-`MAX_CONTEXT_CHARS` caps the `{context}` section passed to the LLM at **every** level, including level 5 (full-context baseline). The cap is derived from retrieval parameters with a 10% buffer and is currently approximately **5,464 characters** — enough for 5 child chunks or up to 3 whole parent chunks. This removes the "large context window" advantage of commercial web chatbots so we assess only RAG retrieval/ranking features, not context capacity.
+`MAX_CONTEXT_CHARS` caps the `{context}` section passed to the LLM at **every** level, including level f (full-context baseline). The cap is derived from retrieval parameters with a 10% buffer and is currently approximately **5,464 characters** — enough for 5 child chunks or up to 3 whole parent chunks. This removes the "large context window" advantage of commercial web chatbots so we assess only RAG retrieval/ranking features, not context capacity.
 
-- Level 5 gets the first ~5,464 chars of the whole document.
-- RAG levels (0–4, 6) get up to ~5,464 chars of retrieved chunks (child or parent depending on level).
+- Level f gets the first ~5,464 chars of the whole document.
+- RAG levels (a–e, g) get up to ~5,464 chars of retrieved chunks (child or parent depending on level).
 - `fit_context()` truncates at a newline or sentence boundary where possible.
 - Each `RunResult` records `context_chars` and `truncated` so we can see when the cap bit.
 
@@ -245,9 +246,9 @@ Four confidence-based features can be toggled on/off via module-level constants 
 - Useful for avoiding hallucinations when retrieval finds nothing relevant.
 
 **`EXPANSION_THRESHOLD`** (default `None`)
-- If set (e.g., `0.3`), level 4 (query expansion) only expands when the top hybrid score from the original question is below this value.
+- If set (e.g., `0.3`), level e (query expansion) only expands when the top hybrid score from the original question is below this value.
 - High-confidence retrieval skips expansion entirely, avoiding query drift on specific fact questions.
-- When `None` (default), level 4 always expands.
+- When `None` (default), level e always expands.
 
 **`WEIGHT_CONTEXT_BY_SCORE`** (default `False`)
 - If True, context chunks are explicitly sorted by score descending before building the prompt.
@@ -287,42 +288,116 @@ pip install sentence-transformers rank_bm25 numpy openai
 export OPENROUTER_API_KEY="sk-or-..."
 
 # 5. Compare naive RAG vs full-context baseline (identical model, context cap, thinking level)
-python rag_experiment.py --levels 0 5 --questions-file questions.json
+python rag_experiment.py --levels a f --questions-file questions.json
 
 # 6. Add progressive features one at a time
-python rag_experiment.py --level 1   # + hybrid (vector + BM25)
-python rag_experiment.py --level 2   # + parent-child (return parent chunks)
-python rag_experiment.py --level 3   # + cross-encoder reranking
-python rag_experiment.py --level 4   # + query expansion (multi-query)
-python rag_experiment.py --level 6   # all advanced combined
+python rag_experiment.py --level b   # + hybrid (vector + BM25)
+python rag_experiment.py --level c   # + parent-child (return parent chunks)
+python rag_experiment.py --level d   # + cross-encoder reranking
+python rag_experiment.py --level e   # + query expansion (multi-query)
+python rag_experiment.py --level g   # all advanced combined
+python rag_experiment.py --level h   # sparse-only (BM25 keyword search only)
 
 Without an OpenRouter key, temporarily set `LLM_BACKEND = "stub"` to test the pipeline without API calls.
 
 **Questions:** Questions are held constant across all levels for fair A/B comparison. Load them from a JSON file via `--questions-file`, or use the `EVAL_QUESTIONS` constant in the script as fallback. Each question can include an optional `reference_answer` field; if provided, it is saved in every `RunResult` (output JSONL) for later scoring/manual comparison.
 
 
-## Deferred: GraphRAG
+## GraphRAG Experiment (separate script)
 
-**Status:** Deferred. Not part of the current progressive experiment.
+**Status:** Implemented as `rag_experiment_graphrag.py` — a separate experiment, not a level in `rag_experiment.py`.
 
 **What it is:** A retrieval paradigm that replaces unstructured chunk retrieval with a knowledge graph. At index time, an LLM extracts entities and relationships from the document, builds a graph (nodes = entities, edges = relationships), detects communities, and generates community summaries. At query time, the system retrieves relevant communities/subgraphs and uses the structured relationships + summaries as context.
 
-**How it differs from dense/sparse/hybrid:**
-- Dense/sparse retrieve *text chunks*. GraphRAG retrieves *structured relationships and pre-computed community summaries*.
-- Changes the unit of retrieval from "chunk" to "graph subgraph / community."
-- Requires an LLM pass over the document at index time for entity extraction (expensive and slow).
-- For a **single document**, GraphRAG is often overkill; dense/sparse hybrid usually performs comparably with far less complexity.
+**Why separate from the controlled experiment:**
 
-**Why deferred from this experiment:**
 | Factor | Assessment |
 |--------|-----------|
-| **Variable isolated** | Replaces the whole retrieval paradigm, not a single feature. Does not isolate cleanly. |
-| **Implementation complexity** | High. Needs entity extraction, graph construction, community detection (Leiden/Louvain), graph traversal, new prompt template for graph context. |
-| **Fits current script?** | Poorly. Script is built around chunk-based retrieval (`chunk_text`, `VectorStore`, `BM25Index`). GraphRAG needs a parallel pipeline or rewrite. |
+| **Variable isolated** | Replaces the whole retrieval paradigm, not a single feature. Does not isolate cleanly within the a–h level sequence. |
+| **Implementation complexity** | High. Needs entity extraction, graph construction, community detection, graph traversal, new prompt template for graph context. |
+| **Fits current script?** | Poorly. Script is built around chunk-based retrieval (`chunk_text`, `VectorStore`, `BM25Index`). GraphRAG needs a parallel pipeline. |
 | **Breaks constants?** | Yes. Index-time LLM extraction means document processing is no longer constant across levels. Would need extraction prompt and model as additional fixed constants. |
 | **Expected impact** | High for multi-document, cross-document reasoning. Modest for a single document. |
 
-**Future path:** If dense/sparse hybrid plateaus or you move to a multi-document corpus, build GraphRAG as a **separate experiment script**, not a level in this one, so it doesn't corrupt the controlled constants here.
+**GraphRAG lives in `rag_experiment_graphrag.py`** so it doesn't corrupt the controlled constants in `rag_experiment.py`. Both scripts read the same `document.txt` and `questions.json`, so results can be compared side-by-side.
+
+### GraphRAG architecture diagram
+
+```mermaid
+flowchart TD
+    subgraph IndexTime["Index-time (run once at Experiment init)"]
+    I1[Load document.txt]
+    I2[Chunk text for LLM input]
+    I3[LLM extracts entities + relationships per chunk]
+    I4[Build KnowledgeGraph: nodes + edges]
+    I5[Detect communities (connected components)]
+    I6[LLM summarizes each community]
+    end
+
+    subgraph QueryTime["Query-time (per question)"]
+    Q1[LLM extracts entities from question]
+    Q2[Lookup entities in graph]
+    Q3[Traverse 1-2 hops to find connected communities]
+    Q4[Rank communities by entity match + edge confidence]
+    Q5[Build context from community summaries + entity descriptions]
+    Q6[fit_context cap at MAX_CONTEXT_CHARS]
+    Q7[LLM generate answer with thinking_level=low]
+    end
+
+    subgraph Constants["Constants unchanged from rag_experiment.py"]
+    C1[Model: gpt-4o-mini via OpenRouter]
+    C2[Thinking: low]
+    C3[Context cap: MAX_CONTEXT_CHARS]
+    C4[Top-K: 5 communities]
+    C5[Document: document.txt]
+    end
+
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6
+    Q1 --> Q2 --> Q3 --> Q4 --> Q5 --> Q6 --> Q7
+    I6 -.-> Q5
+    C1 -.-> Q7
+    C2 -.-> Q7
+    C3 -.-> Q6
+    C4 -.-> Q4
+    C5 -.-> I1
+
+    classDef idx fill:#e1f5e1,stroke:#333;
+    classDef qry fill:#e3f2fd,stroke:#333;
+    classDef const fill:#fff3e0,stroke:#333;
+    class I1,I2,I3,I4,I5,I6 idx;
+    class Q1,Q2,Q3,Q4,Q5,Q6,Q7 qry;
+    class C1,C2,C3,C4,C5 const;
+```
+
+### GraphRAG vs chunk-based RAG (levels a–h)
+
+| Aspect | Chunk-based RAG (levels a–h) | GraphRAG (`rag_experiment_graphrag.py`) |
+|--------|------------------------------|------------------------------------------|
+| Index-time processing | Chunk + embed + store (no LLM) | Chunk → LLM entity extraction → graph → communities |
+| Retrieval unit | Chunk (512 chars) | Graph community (group of entities) |
+| Context unit | Raw chunk text | Community summaries + entity descriptions |
+| Query search | Vector similarity / BM25 / hybrid | Entity extraction → graph traversal → community ranking |
+| Index-time LLM? | No | Yes |
+| Constants enforced | All a–h constants | Subset (see constant analysis below) |
+| Output file | `results/level_<X>_<ts>.jsonl` | `results/graphrag_<ts>.jsonl` |
+
+### Constant analysis: GraphRAG vs chunk-based RAG
+
+**Apply** — kept identical for fair A/B comparison:
+- `DOCUMENT_PATH`, `EMBEDDING_MODEL_NAME`, `LLM_BACKEND`, `LLM_MODEL_NAME`, `THINKING_LEVEL`, `TOP_K`, `MAX_CONTEXT_CHARS`, `OPENROUTER_*`, `EVAL_QUESTIONS`, `RESULTS_DIR`, `CONFIDENCE_THRESHOLD`
+
+**Don't apply** — removed because GraphRAG doesn't use fixed-size chunks:
+- `CHUNK_SIZE`, `CHUNK_OVERLAP`, `PARENT_CHUNK_SIZE`, `PARENT_CHUNK_OVERLAP`, `HYBRID_TOP_K`, `CHUNK_CONTEXT_OVERHEAD`, `CHILD_CONTEXT_CHARS`, `PARENT_CONTEXT_CHARS`, `WEIGHT_CONTEXT_BY_SCORE`, `USE_WEIGHTED_RRF`
+
+**Change** — GraphRAG-specific constants:
+- `ENTITY_EXTRACTION_MODEL` — LLM used for index-time entity/relationship extraction
+- `ENTITY_EXTRACTION_THINKING` — Reasoning effort for extraction LLM
+- `COMMUNITY_DETECTION_ALGORITHM` — Community detection method (default: connected_components)
+- `MAX_ENTITIES_PER_COMMUNITY` — Cap on entities in a community summary
+- `GRAPH_EDGE_WEIGHT_THRESHOLD` — Minimum relationship confidence to include an edge
+- `MAX_COMMUNITIES_RETURNED` — Max communities retrieved per query
+
+Removed constants are recorded in every `RunResult.config` as `note_*` fields (e.g., `"note_chunk_size": "N/A — GraphRAG uses entity extraction, not fixed chunks"`), keeping the output self-describing and reproducible.
 
 ---
 
@@ -342,7 +417,7 @@ flowchart TD
     C5[Thinking: low]
     end
 
-    M[main] --> E[Experiment level 0-6]
+    M[main] --> E[Experiment level a-h]
     E --> RQ[run_all]
     RQ --> RQQ[run_question]
     RQQ --> RET[retrieve]
@@ -363,13 +438,14 @@ flowchart TD
 ```mermaid
 flowchart LR
     Q[Question]
-    Q --> L0[Level 0: vector only]
-    Q --> L1[Level 1: hybrid vector+BM25]
-    Q --> L2[Level 2: hybrid → parent chunks]
-    Q --> L3[Level 3: hybrid + rerank]
-    Q --> L4[Level 4: hybrid + query expansion]
-    Q --> L5[Level 5: full doc no retrieval]
-    Q --> L6[Level 6: all advanced]
+    Q --> La[Level a: vector only]
+    Q --> Lb[Level b: hybrid vector+BM25]
+    Q --> Lc[Level c: hybrid → parent chunks]
+    Q --> Ld[Level d: hybrid + rerank]
+    Q --> Le[Level e: hybrid + query expansion]
+    Q --> Lf[Level f: full doc no retrieval]
+    Q --> Lg[Level g: all advanced]
+    Q --> Lh[Level h: sparse-only BM25]
 
     L0 --> CH[Child chunks]
     L1 --> CH
@@ -395,18 +471,17 @@ flowchart LR
 ┌──────────────────────────────────────────────────────────────────────┐
 │  RETRIEVAL STRATEGY (level-dependent)                                │
 ├─────────────────┬─────────────────┬─────────────────┬────────────────┤
-│  Level 0        │  Level 1        │  Level 2        │  Level 3       │
+│  Level a        │  Level b        │  Level c        │  Level d       │
 │  dense only     │  hybrid (V+BM)  │  hybrid +       │  hybrid +      │
 │  → child chunks │  → child chunks │  parent context │  rerank →      │
 │                 │                 │  (children→parents)│ child chunks│
 └─────────────────┴─────────────────┴─────────────────┴────────────────┘
 ┌─────────────────┬─────────────────┬─────────────────┬──────────────┐
-│  Level 4        │  Level 5        │  Level 6        │              │
-│  hybrid +       │  full-context   │  hybrid +       │              │
-│  query expansion│  (no retrieval) │  parent-child + │              │
-│  → child chunks │  → whole doc    │  rerank +       │              │
-│                 │  (capped)       │  expansion →    │              │
-│                 │                 │  parent chunks  │              │
+│  Level e        │  Level f        │  Level g        │  Level h       │
+│  hybrid +       │  full-context   │  hybrid +       │  sparse-only   │
+│  query expansion│  (no retrieval) │  rerank +       │  BM25 only     │
+│  → child chunks │  → whole doc    │  expansion →    │  → child chunks│
+│                 │  (capped)       │  parent chunks  │                │
 └─────────────────┴─────────────────┴─────────────────┘
          │
          ▼
@@ -436,7 +511,7 @@ flowchart LR
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Diagram 2: Parent-child mapping (levels 2 and 6)
+### Diagram 2: Parent-child mapping (levels c and g)
 
 ```
 DOCUMENT TEXT
@@ -459,7 +534,7 @@ child_to_parent map (index parallel to child_offsets):
   ...
   If a child straddles two parents, fallback = parent with max overlap.
 
-At level 2/6:
+At level c/g:
   retrieve children → map to unique parents → return parent chunks
 ```
 
@@ -497,34 +572,36 @@ At level 2/6:
 
 ```
 FUNCTION retrieve(question):
-    IF level == 5:                          # level 5: full-context baseline
+    IF level == "f":                        # level f: full-context baseline
         RETURN [], False                    # no retrieval
 
-    use_parents = (level IN {2, 6})         # levels 2, 6: parent-child context
+    use_parents = (level IN {"c", "g"})     # levels c, g: parent-child context
 
-    IF level == 0:                          # level 0: naive RAG
+    IF level == "a":                        # level a: naive RAG
         child_hits = dense_search(question, top_k=TOP_K)
-    ELSE IF level == 1:                     # level 1: hybrid RAG
+    ELSE IF level == "b":                   # level b: hybrid RAG
         child_hits = hybrid_search(question, top_k=TOP_K, candidate_k=HYBRID_TOP_K)
-    ELSE IF level IN {2, 3, 4, 6}:          # levels 2, 3, 4, 6: hybrid pool
-        IF level == 4:                      # level 4: query expansion
+    ELSE IF level == "h":                   # level h: sparse-only BM25
+        child_hits = bm25_search(question, top_k=TOP_K)
+    ELSE IF level IN {"c", "d", "e", "g"}:  # levels c, d, e, g: hybrid pool
+        IF level == "e":                    # level e: query expansion
             # query expansion: generate variants, search each, fuse by RRF
             variants = [question] + LLM_generate_variants(question)
             all_hits = []
             FOR q IN variants:
                 all_hits.append(hybrid_search(q, top_k=HYBRID_TOP_K))
             child_hits = rrf_fuse(all_hits)[:HYBRID_TOP_K]
-        ELSE:                               # levels 2, 3, 6: hybrid only
+        ELSE:                               # levels c, d, g: hybrid only
             child_hits = hybrid_search(question, top_k=HYBRID_TOP_K, candidate_k=HYBRID_TOP_K)
 
-        IF reranker EXISTS:                 # levels 3, 6: reranker active
+        IF reranker EXISTS:                 # levels d, g: reranker active
             child_hits = cross_encoder_rerank(question, child_hits, top_k=TOP_K)
-        ELSE:                               # level 2: no reranker
+        ELSE:                               # level c: no reranker
             child_hits = child_hits[:TOP_K]
     ELSE:                                   # unreachable safety fallback
         child_hits = dense_search(question, top_k=TOP_K)
 
-    IF use_parents:                         # levels 2, 6: map to parents
+    IF use_parents:                         # levels c, g: map to parents
         parent_hits = []
         seen = {}
         FOR (child_idx, score) IN child_hits:
@@ -534,7 +611,7 @@ FUNCTION retrieve(question):
                     parent_hits.append((parent_idx, score))
         RETURN parent_hits, True
 
-    RETURN child_hits, False                # levels 0, 1, 3, 4: return children
+    RETURN child_hits, False                # levels a, b, d, e: return children
 ```
 
 ### Pseudo Code: `run_question()` — end-to-end flow per question
@@ -543,10 +620,10 @@ FUNCTION retrieve(question):
 FUNCTION run_question(question):
     start = timer()
 
-    IF level == 5:                          # level 5: full-context baseline
+    IF level == "f":                        # level f: full-context baseline
         context = full_document            # no retrieval
         retrieved_chunks = []
-    ELSE:                                   # levels 0, 1, 2, 3, 4, 6: all retrieval levels
+    ELSE:                                   # levels a, b, c, d, e, g, h: all retrieval levels
         hits, use_parents = retrieve(question)
         chunk_source = parent_chunks IF use_parents ELSE child_chunks
         context = build_context(chunk_source, hits)
@@ -647,7 +724,7 @@ source .venv/bin/activate
 export LD_LIBRARY_PATH=/nix/store/...gcc-*/lib:/nix/store/...zlib-*/lib:$LD_LIBRARY_PATH
 
 # Run all levels first
-python rag_experiment.py --levels 0 1 2 3 4 5 6 --questions-file questions.json
+python rag_experiment.py --levels a b c d e f g h --questions-file questions.json
 
 # Then analyze
 python analyze_results.py results/
@@ -678,21 +755,21 @@ Each question type has a **predicted level** — our hypothesis about which RAG 
 
 | Question Type | Predicted Level | Rationale |
 |---------------|----------------|-----------|
-| `fact_lookup` | 1 | Hybrid: keyword + vector for exact term matching |
-| `entity_extraction` | 2 | Parent-child: parent context around entity matches |
-| `synthesis` | 3 | Cross-encoder reranker for multi-chunk reasoning |
-| `conceptual` | 4 | Query expansion for broad conceptual questions |
-| `other` | 0 | Naive RAG fallback |
+| `fact_lookup` | b | Hybrid: keyword + vector for exact term matching |
+| `entity_extraction` | c | Parent-child: parent context around entity matches |
+| `synthesis` | d | Cross-encoder reranker for multi-chunk reasoning |
+| `conceptual` | e | Query expansion for broad conceptual questions |
+| `other` | a | Naive RAG fallback |
 
 The analysis script compares **predicted level** vs **actual best level** (from scores) for every question, showing match/mismatch per question and per question type:
 
 ```
 Q: What specific name does the author give to...?
     Type: entity_extraction
-    Predicted level: 2 | Actual best: 4 (score: 0.458) [✗]
+    Predicted level: c | Actual best: e (score: 0.458) [✗]
 ```
 
-This tells you where your classification-to-level mapping was correct and where it needs adjustment — e.g., if `entity_extraction` consistently maps to level 4 instead of level 2, you'd update `QUESTION_TYPE_TO_LEVEL` in the script.
+This tells you where your classification-to-level mapping was correct and where it needs adjustment — e.g., if `entity_extraction` consistently maps to level e instead of level c, you'd update `QUESTION_TYPE_TO_LEVEL` in the script.
 
 This classification is a starting point — you can tune the keywords, the level mapping, or replace with an LLM-based classifier later.
 

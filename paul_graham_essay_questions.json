@@ -1,0 +1,46 @@
+[
+{
+"question": "According to Paul Graham, what percentage of people sentenced to death in the real world are estimated to be innocent?",
+"reference_answer": "About 4% of people sentenced to death in the real world are estimated to be innocent."
+},
+{
+"question": "What does the author argue is the primary source of economic inequality that cannot be eliminated?",
+"reference_answer": "Variation in productivity (driven by technology growth) is the irreducible core and primary source of economic inequality."
+},
+{
+"question": "What historical figure's bets on physics, alchemy, and theology does the author use to illustrate the risk-taking behavior of famous scientists?",
+"reference_answer": "Isaac Newton."
+},
+{
+"question": "What specific name does the author give to the statistical measure or phenomenon described as \"a unique combination of circumstances that compressed American society not just economically but culturally too\"?",
+"reference_answer": "The author refers to it as an anomaly or the \"Duplo economy\" period driven by total war and the rise of large national corporations (or the Great Compression)."
+},
+{
+"question": "Which specific proposition on the California ballot did the author urge voters to support, and which one did he warn against?",
+"reference_answer": "He urged voters to support Proposition 62 (which bans the death penalty) and warned against Proposition 66 (whose goal is to make it easier to execute people)."
+},
+{
+"question": "What term does Marc Andreessen use—quoted by the author—to describe problems like alchemy and theology during Newton's day?",
+"reference_answer": "\"Huge, if true.\""
+},
+{
+"question": "What specific neighborhood details or urban features does the author recommend Pittsburgh focus on to mirror San Francisco and attract twenty-somethings?",
+"reference_answer": "He recommends encouraging the youth-driven food boom (independent restaurants and cafes), preserving old historic buildings instead of tearing them down, and making the city exceptionally bicycle- and pedestrian-friendly."
+},
+{
+"question": "How does the author differentiate between the \"youth-driven food boom\" and the true \"prime mover\" of Pittsburgh's potential as a startup hub?",
+"reference_answer": "While independent restaurants and cafes create neighborhood personality, the true prime mover is cheap housing—specifically, affordable housing in cool, pre-car neighborhoods with solid, historic architecture."
+},
+{
+"question": "According to the text, why did the breakup of the \"Duplo economy\" cause both economic and social fragmentation?",
+"reference_answer": "The breakup of large, vertically integrated corporations and oligopolies eliminated the forces pushing wages and cultural norms toward a single standard center, causing employment, salaries, and cultural lifestyles (such as clothing, food, and mobility) to drift toward individual market prices and diverse personal preferences."
+},
+{
+"question": "Retrieve the exact mathematical explanation the author gives for why a founder can afford to be un-rapacious or nice without hurting long-term success.",
+"reference_answer": "If a company is growing rapidly (e.g., at 5% a week) and an un-rapacious founder extracts only half as much money from users as possible, after two years they will make $80k a month instead of $160k; however, because compounding growth shapes the curve, a mere 15 weeks later they will catch up to where the rapacious founder was at the two-year mark (since 2 ≈ 1.05 ^ 15), leaving them only 3.5 months behind."
+},
+{
+"question": "Identify the exact reason why the author argues that the mid-20th century economic/cultural compression was an \"anomaly.\"",
+"reference_answer": "It was caused by a unique, one-time combination of circumstances—specifically total war (World War II) with its socialist-style economic/wage controls and social leveling, followed by the rise of giant national corporations and labor unions that created an artificial, low-resolution corporate conformity."
+}
+]

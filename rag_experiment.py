@@ -9,13 +9,14 @@ and OpenRouter backend are fixed across all levels. Only the retrieval /
 ranking feature set changes per level.
 
 Feature levels:
-  0 = Naive RAG: vector search on child chunks, return child chunks
-  1 = Hybrid RAG: vector + BM25 keyword search (RRF fused), return child chunks
-  2 = Parent-child retrieval: vector search on child chunks, return parent chunks as context
-  3 = Hybrid + Cross-encoder reranking over top candidates, return child chunks
-  4 = Hybrid + Query expansion (multi-query via LLM), return child chunks
-  5 = Full-context baseline: no retrieval, whole document capped at MAX_CONTEXT_CHARS
-  6 = All advanced: hybrid + parent-child + rerank + query expansion
+  a = Naive RAG: vector search on child chunks, return child chunks
+  b = Hybrid RAG: vector + BM25 keyword search (RRF fused), return child chunks
+  c = Parent-child retrieval: vector search on child chunks, return parent chunks as context
+  d = Hybrid + Cross-encoder reranking over top candidates, return child chunks
+  e = Hybrid + Query expansion (multi-query via LLM), return child chunks
+  f = Full-context baseline: no retrieval, whole document capped at MAX_CONTEXT_CHARS
+  g = All advanced: hybrid + parent-child + rerank + query expansion
+  h = Sparse-only RAG: BM25 keyword search only, return child chunks
 
 Usage:
   python rag_experiment.py --level 0
@@ -682,6 +683,29 @@ def retrieve_naive(
     return vs.search(q_emb, top_k=top_k)
 
 
+def retrieve_sparse(
+    question: str,
+    bm25: BM25Index,
+    top_k: int = TOP_K,
+) -> List[Tuple[int, float]]:
+    """Sparse-only retrieval: BM25 keyword search without vector search.
+
+    Used as a baseline to compare against dense-only (level 0) and hybrid (level 1).
+    Isolates whether keyword search alone can retrieve relevant chunks,
+    which matters for support tickets with exact terms (error codes, product names,
+    ticket IDs) that dense embeddings may miss.
+
+    Args:
+        question: The user question.
+        bm25: BM25Index built over document chunks.
+        top_k: Number of chunks to return.
+
+    Returns:
+        List of (chunk_index, bm25_score) pairs, sorted by descending score.
+    """
+    return bm25.search(question, top_k=top_k)
+
+
 def retrieve_hybrid(
     question: str,
     embedder: Embedder,
@@ -890,7 +914,7 @@ class Experiment:
         self.vs = VectorStore(self.embedder, self.child_chunks)
         self.bm25 = BM25Index(self.child_chunks)
         # Cross-encoder reranker is only instantiated at levels 3 and 6.
-        self.reranker = Reranker() if level in (3, 6) else None
+        self.reranker = Reranker() if level in ("d", "g") else None
         self.llm = make_llm()
 
     def retrieve(
@@ -924,27 +948,32 @@ class Experiment:
           only one parent fits, only one is returned.
         """
         # Level 5 is the full-context baseline: no retrieval at all.
-        if self.level == 5:
+        if self.level == "f":
             return [], False
 
-        # Levels 2 and 6 return parent chunks as context instead of raw children.
-        use_parents = self.level in (2, 6)
+        # Levels c and g return parent chunks as context instead of raw children.
+        use_parents = self.level in ("c", "g")
 
-        if self.level == 0:
+        if self.level == "a":
             # Naive RAG: vector search only.
             child_hits = retrieve_naive(
                 question, self.embedder, self.vs, top_k=TOP_K
             )
-        elif self.level == 1:
+        elif self.level == "b":
             # Hybrid: vector + BM25 fused by RRF.
             child_hits = retrieve_hybrid(
                 question, self.embedder, self.vs, self.bm25,
                 top_k=TOP_K, candidate_k=HYBRID_TOP_K,
                 weight_by_score=self.use_weighted_rrf,
             )
-        elif self.level in (2, 3, 4, 6):
+        elif self.level == "h":
+            # Sparse-only: BM25 keyword search only, no vector search.
+            child_hits = retrieve_sparse(
+                question, self.bm25, top_k=TOP_K
+            )
+        elif self.level in ("c", "d", "e", "g"):
             # Levels 2, 3, 4, 6 all start from a hybrid candidate pool over children.
-            if self.level == 4:
+            if self.level == "e":
                 # Conditional query expansion: if EXPANSION_THRESHOLD is set and
                 # the original-question hybrid search already returns a
                 # high-confidence hit, skip expansion to avoid query drift.
@@ -1048,7 +1077,7 @@ class Experiment:
         abstained = False
         top_chunk_score: Optional[float] = None
 
-        if self.level == 5:
+        if self.level == "f":
             # Full-context baseline: entire document as context (then capped).
             # No retrieval; the model must find the answer in the whole document.
             context = self.document
@@ -1181,13 +1210,14 @@ def save_results(results: List[RunResult], level: int) -> Path:
 # Human-readable description of each experiment level, printed by main().
 # Updated whenever level behavior changes.
 LEVEL_DESCRIPTIONS = {
-    0: "Naive RAG (vector search only, return child chunks)",
-    1: "Hybrid RAG (vector + BM25, RRF fused, return child chunks)",
-    2: "Parent-child retrieval (vector search children, return parent chunks)",
-    3: "Hybrid + Cross-encoder reranking (return child chunks)",
-    4: "Hybrid + Query expansion (multi-query, return child chunks)",
-    5: "Full-context baseline (no retrieval, whole document capped)",
-    6: "All advanced (hybrid + parent-child + rerank + query expansion)",
+    "a": "Naive RAG (vector search only, return child chunks)",
+    "b": "Hybrid RAG (vector + BM25, RRF fused, return child chunks)",
+    "c": "Parent-child retrieval (vector search children, return parent chunks)",
+    "d": "Hybrid + Cross-encoder reranking (return child chunks)",
+    "e": "Hybrid + Query expansion (multi-query, return child chunks)",
+    "f": "Full-context baseline (no retrieval, whole document capped)",
+    "g": "All advanced (hybrid + parent-child + rerank + query expansion)",
+    "h": "Sparse-only RAG (BM25 keyword search only, return child chunks)",
 }
 
 
@@ -1203,8 +1233,8 @@ def main():
       4. Prints a summary of each answer to stdout.
 
     CLI flags:
-        --level N          Run a single level (0-6).
-        --levels N N       Run multiple levels.
+        --level X          Run a single level (a-h).
+        --levels X X       Run multiple levels.
         --document         Path to the document under test (overrides DOCUMENT_PATH).
         --questions-file   Path to JSON file with list of question strings (overrides EVAL_QUESTIONS).
 
@@ -1213,10 +1243,10 @@ def main():
     # Allow CLI override of document path and questions (keeps everything else constant)
     global DOCUMENT_PATH, QUESTIONS_FILE
     parser = argparse.ArgumentParser(description="Progressive RAG experiment on one document")
-    parser.add_argument("--level", type=int, choices=list(LEVEL_DESCRIPTIONS.keys()),
-                        help="Run a single level")
-    parser.add_argument("--levels", nargs="+", type=int, choices=list(LEVEL_DESCRIPTIONS.keys()),
-                        help="Run multiple levels")
+    parser.add_argument("--level", type=str, choices=list(LEVEL_DESCRIPTIONS.keys()),
+                        help="Run a single level (a-h)")
+    parser.add_argument("--levels", nargs="+", type=str, choices=list(LEVEL_DESCRIPTIONS.keys()),
+                        help="Run multiple levels (a-h)")
     parser.add_argument("--document", type=Path, default=DOCUMENT_PATH,
                         help="Path to the single document (overrides CONSTANTS)")
     parser.add_argument("--questions-file", type=Path, default=QUESTIONS_FILE,
