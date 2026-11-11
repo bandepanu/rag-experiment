@@ -19,12 +19,12 @@ Feature levels:
   h = Sparse-only RAG: BM25 keyword search only, return child chunks
 
 Usage:
-  python rag_experiment.py --level 0
-  python rag_experiment.py --level 6
-  python rag_experiment.py --levels 0 1 2 3 4 5 6
+  python rag_experiment.py --level a
+  python rag_experiment.py --level g
+  python rag_experiment.py --levels a b c d e f g h
 
 Outputs:
-  results/level_<N>_<timestamp>.jsonl  (one JSON line per eval question)
+  results/level_<X>_<timestamp>.jsonl  (one JSON line per eval question)
 
 Prerequisite:
   Put OPENROUTER_API_KEY="sk-or-..." in .env (auto-loaded) or export it.
@@ -174,7 +174,7 @@ assert TOP_K > 0, "TOP_K must be positive"
 # Reasonable starting values: 0.5-0.7 for cosine similarity; None disables.
 CONFIDENCE_THRESHOLD = None
 
-# If set (not None), only apply query expansion at level 4 when top hybrid score < this value.
+# If set (not None), only apply query expansion at level e when top hybrid score < this value.
 # High-confidence retrieval skips expansion to avoid query drift.
 # Reasonable starting values: 0.2-0.4; None disables (always expand).
 EXPANSION_THRESHOLD = None
@@ -431,7 +431,7 @@ def build_child_to_parent_map(
 ) -> List[List[int]]:
     """Map each child chunk to the parent chunk(s) that fully contain it.
 
-    Used by parent-child retrieval (levels 2 and 6): after retrieving child
+    Used by parent-child retrieval (levels c and g): after retrieving child
     chunks by vector search, we map them back to their containing parents so
     the parent's larger context can be passed to the LLM.
 
@@ -570,7 +570,7 @@ class Reranker:
     """Cross-encoder reranker that re-scores retrieval candidates.
 
     Takes the top candidate pool from hybrid/vector search and applies a
-    more expressive cross-encoder model to re-order them. Used at levels 3
+    more expressive cross-encoder model to re-order them. Used at levels d
     and 6. Unlike the bi-encoder (Embedder), the cross-encoder attends to
     the query and candidate jointly, producing more accurate relevance scores.
     """
@@ -606,7 +606,7 @@ class Reranker:
 def expand_query(llm: LLM, question: str, n_variants: int = 3) -> List[str]:
     """Generate alternative query formulations using the LLM.
 
-    Used at level 4 (query expansion). The original question plus LLM-generated
+    Used at level e (query expansion). The original question plus LLM-generated
     variants are each used for retrieval, and results are fused. This helps when
     the user's wording differs from the document's wording.
 
@@ -668,7 +668,7 @@ def retrieve_naive(
 ) -> List[Tuple[int, float]]:
     """Dense-only retrieval: embed the question and search the vector store.
 
-    Used at level 0 (naive RAG). No keyword search, no reranking, no expansion.
+    Used at level a (naive RAG). No keyword search, no reranking, no expansion.
 
     Args:
         question: The user question.
@@ -690,7 +690,7 @@ def retrieve_sparse(
 ) -> List[Tuple[int, float]]:
     """Sparse-only retrieval: BM25 keyword search without vector search.
 
-    Used as a baseline to compare against dense-only (level 0) and hybrid (level 1).
+    Used as a baseline to compare against dense-only (level a) and hybrid (level b).
     Isolates whether keyword search alone can retrieve relevant chunks,
     which matters for support tickets with exact terms (error codes, product names,
     ticket IDs) that dense embeddings may miss.
@@ -717,7 +717,7 @@ def retrieve_hybrid(
 ) -> List[Tuple[int, float]]:
     """Hybrid retrieval: dense vector search + BM25 keyword search, fused by RRF.
 
-    Used at levels 1, 2, 3, 4, 6 as the base retrieval step. Retrieves
+    Used at levels b, c, d, e, g as the base retrieval step. Retrieves
     candidate_k results from each index, fuses them with RRF, and returns
     the fused ranking (later narrowed to top_k by the caller).
 
@@ -775,7 +775,7 @@ def fit_context(context: str, max_chars: int = MAX_CONTEXT_CHARS) -> Tuple[str, 
     """Truncate context to max_chars, cutting at a clean boundary when possible.
 
     Enforced at ALL levels so the LLM always sees the same maximum context
-    budget, preventing the full-context baseline (level 5) from winning simply
+    budget, preventing the full-context baseline (level f) from winning simply
     by stuffing more text into the prompt.
 
     Cutting preference:
@@ -842,13 +842,13 @@ class RunResult:
 class Experiment:
     """Runs one level of the progressive RAG experiment on a single document.
 
-    Each Experiment instance is bound to a single level (0-6). All constants
+    Each Experiment instance is bound to a single level (a-h). All constants
     (document, model, embeddings, chunking, context cap, thinking level, etc.)
     are captured as instance attributes and recorded in every RunResult so the
     experimental conditions are fully reproducible from the output file alone.
 
     Attributes:
-        level: The experiment level (0-6), determining which retrieval/ranking
+        level: The experiment level (a-h), determining which retrieval/ranking
             features are active.
         document_path, embedding_model_name, llm_backend, llm_model_name,
         chunk_size, chunk_overlap, top_k, hybrid_top_k, max_context_chars,
@@ -913,7 +913,7 @@ class Experiment:
         # returned as context, not which chunks are searched.
         self.vs = VectorStore(self.embedder, self.child_chunks)
         self.bm25 = BM25Index(self.child_chunks)
-        # Cross-encoder reranker is only instantiated at levels 3 and 6.
+        # Cross-encoder reranker is only instantiated at levels d and g.
         self.reranker = Reranker() if level in ("d", "g") else None
         self.llm = make_llm()
 
@@ -927,7 +927,7 @@ class Experiment:
               - hits: list of (chunk_index, score) pairs. chunk_index indexes
                 into self.child_chunks unless use_parents is True, in which
                 case it indexes into self.parent_chunks.
-              - use_parents: True at levels 2 and 6 (parent-child retrieval),
+              - use_parents: True at levels c and g (parent-child retrieval),
                 False otherwise.
 
         Level behavior:
@@ -939,7 +939,7 @@ class Experiment:
           - Level 5: full-context baseline, no retrieval (returns empty).
           - Level 6: all advanced (hybrid + parent-child + rerank + expansion).
 
-        Parent-child selection (levels 2 and 6):
+        Parent-child selection (levels c and g):
           Retrieved children are mapped to their containing parent chunks.
           Multiple children may map to the same parent, so parents are
           deduplicated (keeping the best child score). Whole parents are then
@@ -1009,7 +1009,7 @@ class Experiment:
                 )
 
             # Apply cross-encoder reranking only when the reranker exists
-            # (levels 3 and 6). Otherwise keep the top_k hybrid results.
+            # (levels d and g). Otherwise keep the top_k hybrid results.
             if self.reranker is not None:
                 candidate_texts = [(i, self.child_chunks[i]) for i, _ in child_hits]
                 child_hits = self.reranker.rerank(
@@ -1059,7 +1059,7 @@ class Experiment:
         """Run a single evaluation question through this experiment level.
 
         The full flow per question:
-          1. Build context (retrieve chunks, or use whole document at level 5).
+          1. Build context (retrieve chunks, or use whole document at level f).
           2. Cap context at MAX_CONTEXT_CHARS via fit_context().
           3. Format the prompt with PROMPT_TEMPLATE.
           4. Generate an answer via the LLM with THINKING_LEVEL.
@@ -1190,7 +1190,7 @@ def save_results(results: List[RunResult], level: int) -> Path:
 
     Args:
         results: List of RunResult objects from a single level run.
-        level: The experiment level (0-6) these results belong to.
+        level: The experiment level (a-h) these results belong to.
 
     Returns:
         Path to the written JSONL file.

@@ -447,13 +447,14 @@ flowchart LR
     Q --> Lg[Level g: all advanced]
     Q --> Lh[Level h: sparse-only BM25]
 
-    L0 --> CH[Child chunks]
-    L1 --> CH
-    L2 --> PH[Parent chunks]
-    L3 --> CH
-    L4 --> CH
-    L5 --> FD[Full document capped]
-    L6 --> PH
+    La --> CH[Child chunks]
+    Lb --> CH
+    Lc --> PH[Parent chunks]
+    Ld --> CH
+    Le --> CH
+    Lf --> FD[Full document capped]
+    Lg --> PH
+    Lh --> CH
 
     CH --> FCX[fit_context ≤ MAX_CONTEXT_CHARS]
     PH --> FCX

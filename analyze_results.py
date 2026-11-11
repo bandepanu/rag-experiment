@@ -233,18 +233,18 @@ def analyze_question_group(
     if wrong_scores:
         abstention_analysis["recommended_threshold"] = round(max(wrong_scores) + 0.05, 2)
 
-    # Expansion analysis: level 4 vs level 3
+    # Expansion analysis: level e vs level d
     expansion_analysis: Dict[str, Any] = {
-        "level_3_score": level_scores.get(3, 0.0),
-        "level_4_score": level_scores.get(4, 0.0),
+        "level_d_score": level_scores.get("d", 0.0),
+        "level_e_score": level_scores.get("e", 0.0),
         "expansion_helped": False,
         "expansion_hurt": False,
         "expansion_neutral": False,
     }
-    if 3 in level_scores and 4 in level_scores:
-        if level_scores[4] > level_scores[3] + 0.05:
+    if "d" in level_scores and "e" in level_scores:
+        if level_scores["e"] > level_scores["d"] + 0.05:
             expansion_analysis["expansion_helped"] = True
-        elif level_scores[4] < level_scores[3] - 0.05:
+        elif level_scores["e"] < level_scores["d"] - 0.05:
             expansion_analysis["expansion_hurt"] = True
         else:
             expansion_analysis["expansion_neutral"] = True
@@ -352,7 +352,7 @@ def recommend_expansion_threshold(
 ) -> Optional[float]:
     """Recommend an EXPANSION_THRESHOLD value.
 
-    Looks at questions where expansion hurt (level 4 score < level 3 score)
+    Looks at questions where expansion hurt (level e score < level d score)
     and their top_chunk_score from the base hybrid search.
     Recommends threshold = min(top_chunk_score where expansion hurt) - 0.05,
     so expansion skips when retrieval is decent.
@@ -361,8 +361,8 @@ def recommend_expansion_threshold(
     for qa in question_analyses:
         ea = qa["expansion_analysis"]
         if ea["expansion_hurt"]:
-            # Find the base hybrid score (level 3 or level 1 without expansion)
-            # We look at the question's level 3 score context
+            # Find the base hybrid score (level d or level b without expansion)
+            # We look at the question's level d score context
             # Use the question's own top_chunk_score from non-expansion level
             for r in qa.get("_raw_results", []):
                 if r.get("level") == "b" and r.get("top_chunk_score") is not None:
@@ -483,9 +483,9 @@ def main() -> None:
         print(f"    Level scores: {qd['level_scores']}")
         ea = qd["expansion_analysis"]
         if ea["expansion_helped"]:
-            print(f"    Expansion: HELPED (L3={ea['level_3_score']}, L4={ea['level_4_score']})")
+            print(f"    Expansion: HELPED (Ld={ea['level_d_score']}, Le={ea['level_e_score']})")
         elif ea["expansion_hurt"]:
-            print(f"    Expansion: HURT (L3={ea['level_3_score']}, L4={ea['level_4_score']})")
+            print(f"    Expansion: HURT (Ld={ea['level_d_score']}, Le={ea['level_e_score']})")
 
     # Write to file if requested
     if args.output:
