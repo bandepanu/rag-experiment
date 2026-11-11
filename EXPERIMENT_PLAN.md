@@ -125,6 +125,30 @@ The classifier pre-stage is ideal for **ticket triage/routing** (closed choice f
 3. Does fine-tuning a small encoder beat zero-shot LLM classification for infra-specific categories?
 4. Which RAG level (a–h) works best per triage category?
 
+### Encoder / decoder / LLM / classifier mechanics (primer)
+
+Before comparing model approaches, here is how the pieces relate:
+
+| Piece | What it does | Ticket triage analogy |
+|-------|-------------|----------------------|
+| **Encoder** | Turns text into numbers (vectors). Each ticket becomes a point in a high-dimensional space where similar meanings sit near each other. | "Read the ticket and summarize it into one feature vector." |
+| **Decoder** | Turns numbers back into text. | "Turn a predicted number/token back into words." |
+| **LLM** | Encoder + a prediction core + decoder. Reads the vector and guesses the next piece of text, one token at a time, then repeats. | "Given this ticket, generate a full explanation or category name as text." |
+| **Classifier** | Encoder + a small classifier head (one matrix + bias). Instead of generating text, it outputs one score per label and picks the highest. | "Given this ticket, is it cluster_restart, cert_expiry, or crashloop?" |
+
+Key distinction for our architecture:
+
+- **LLM** is generative: it produces new text. Good for resolution guidance (free-form answers), but slower and more expensive per ticket.
+- **Classifier** is discriminative: it chooses from a fixed set of labels. Good for triage (closed-choice catalog), faster and cheaper.
+
+```
+Ticket text ──► Encoder ──► Summary vector ──┬──► LLM core ──► Decoder ──► Generated text
+                                             │
+                                             └──► Classifier head ──► Label score per category ──► Pick label
+```
+
+**Classifier head** — a small math layer sitting on top of the encoder output. It takes the summary vector and emits one score per triage label (e.g., cluster_restart = 0.87, cert_expiry = 0.04, crashloop = 0.03). The highest score wins.
+
 ### Classifier model approaches (E1 experiment)
 
 For the classifier pre-stage (ticket triage), we compare four model approaches:
@@ -148,6 +172,71 @@ For the classifier pre-stage (ticket triage), we compare four model approaches:
 4. **Fine-tuned encoder** — Requires labeled training data (synthetic triage tickets from document.txt). Fastest and cheapest at production scale. Best accuracy for your specific categories, but requires the upfront fine-tuning effort.
 
 5. **Strands Decider base** — Pre-trained decision model that returns probabilities over options. Follows the AWS pattern exactly. Good if your triage maps to a closed-choice catalog. Base model may need fine-tuning on your specific categories.
+
+### Fine-tuning mechanics: encoder vs classifier head
+
+When fine-tuning an encoder-based classifier, the "nudge" happens in one of two places — and the classifier head is physically inside the same model file as the encoder.
+
+**What the classifier head is**
+The head is a small math layer — typically one weight matrix plus a bias vector — that sits on top of the encoder's output:
+
+```
+Text ──► Encoder ──► Summary vector ──► Classifier head ──► Label scores
+                                          (matrix + bias)
+```
+
+It takes the encoder's single summary vector for the whole ticket and emits one score per triage label (e.g., cluster_restart = 0.87, cert_expiry = 0.04, ...). The highest score wins.
+
+**File layout**
+The head is part of the same model checkpoint/file as the encoder. A saved fine-tuned model contains both the encoder weights and the head weights in one bundle. You do not get a separate `encoder.bin` and `head.bin` unless you deliberately split them. Conceptually the head is a distinct layer you can retrain or swap; physically it rides inside the same file.
+
+**Where the nudges go during fine-tuning**
+
+| Fine-tuning mode | What gets nudged | Encoder weights | Head weights | When to use |
+|------------------|------------------|-----------------|--------------|-------------|
+| Head-only (frozen encoder) | Classifier head only | ❌ Fixed | ✅ Adjusted | Few labeled samples; keep general language knowledge intact |
+| Full fine-tuning | Encoder + head | ✅ Adjusted | ✅ Adjusted | More labeled samples; reshape vectors for your specific triage categories |
+
+**Fine-tuning loop**
+For each labeled sample `(ticket_text, true_label)`:
+1. Encode the ticket text into a summary vector
+2. Pass through the classifier head to get label scores
+3. Compare the predicted scores to the true label
+4. Nudge the internal numbers to reduce the error
+5. Repeat across all samples
+
+After fine-tuning, the same architecture produces different scores because the internal numbers changed — not because the parts changed.
+
+**Risk note:** Head-only fine-tuning can underfit if the encoder's generic vectors don't map well to your infra categories. Full fine-tuning with too few samples can overwrite the encoder's general language knowledge (the model memorizes your noise).
+
+**Confidence scores and thresholds**
+The classifier head emits a raw score per label. Passing these through a softmax turns them into probabilities that sum to 1.0 across all labels. The top probability is the confidence score:
+
+```
+Label scores ──► Softmax ──► Probabilities ──► Pick top label, report its probability as confidence
+```
+
+A confidence threshold decides when the classifier is "sure enough":
+- Confidence ≥ threshold → accept the label, proceed
+- Confidence < threshold → mark as uncertain; route to RAG + LLM or escalate instead of a canned response
+
+Tuning the threshold trades off deflection rate vs accuracy: a higher threshold means fewer tickets auto-resolved by the classifier (lower deflection) but fewer wrong labels (higher precision).
+
+**Classifier → RAG pipeline flow**
+The classifier's outputs are not just labels — they become retrieval filters for the RAG stage:
+
+```
+Ticket ──► Classifier ──► triage_category, app_id, platform, environment, needs_rag, confidence
+                                              │
+                                              ▼
+                                    if needs_rag=true:
+                                    RAG retrieval filtered by app_id, platform, environment
+                                              │
+                                              ▼
+                                    LLM generates resolution guidance using filtered KB chunks
+```
+
+This means the classifier's `triage_category` can also steer which KB sections or community summaries to prioritize in GraphRAG (E4), not just the metadata filters.
 
 **Recommendation for E1:**
 - Start with zero-shot LLM (large or small) to validate the triage taxonomy
